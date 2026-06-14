@@ -1,0 +1,181 @@
+import { computeCommitment, computeNullifier } from "./commitment-client";
+import { hexEquals } from "./bytes";
+import { deriveNoteSecrets, normalizeMnemonic } from "./mnemonic";
+import { createNote } from "./note";
+import type { Note, StoredNoteVault } from "./note-types";
+import { defaultVault } from "./note-types";
+import {
+  fetchVaultChainEvents,
+  isNullifierSpentOnChain,
+  rebuildChainCommitments,
+  type VaultDepositEvent,
+} from "./vault-events";
+
+const DEFAULT_MAX_DERIVATION_SCAN = 256;
+const BATCH_SIZE = 16;
+
+async function computeCommitmentsBatch(
+  items: Array<{
+    id: string;
+    value: string;
+    secret: string;
+    nullifierSecret: string;
+  }>
+): Promise<Record<string, string>> {
+  if (items.length === 0) return {};
+  const res = await fetch("/api/commitment-batch", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items }),
+  });
+  const data = (await res.json()) as {
+    commitments?: Record<string, string>;
+    error?: string;
+  };
+  if (!res.ok || !data.commitments) {
+    throw new Error(data.error ?? "batch commitment failed");
+  }
+  return data.commitments;
+}
+
+async function findDerivationIndex(params: {
+  mnemonic: string;
+  amount: bigint;
+  commitment: string;
+  usedIndices: Set<number>;
+  maxScan: number;
+  onProgress?: (current: number, total: number) => void;
+}): Promise<number | null> {
+  for (let start = 0; start < params.maxScan; start += BATCH_SIZE) {
+    const end = Math.min(start + BATCH_SIZE, params.maxScan);
+    const batch = [];
+    for (let i = start; i < end; i++) {
+      if (params.usedIndices.has(i)) continue;
+      const { secret, nullifierSecret } = deriveNoteSecrets(params.mnemonic, i);
+      batch.push({
+        id: String(i),
+        value: params.amount.toString(),
+        secret,
+        nullifierSecret,
+      });
+    }
+    if (batch.length === 0) continue;
+    params.onProgress?.(end, params.maxScan);
+    const commitments = await computeCommitmentsBatch(batch);
+    for (const [id, computed] of Object.entries(commitments)) {
+      if (hexEquals(computed, params.commitment)) {
+        return Number(id);
+      }
+    }
+  }
+  return null;
+}
+
+function mergeIncomingNotes(rescanned: Note[], existing: Note[]): Note[] {
+  const byCommitment = new Map(rescanned.map((n) => [n.commitment, n]));
+  for (const note of existing) {
+    if (note.derivationIndex !== undefined) continue;
+    if (!byCommitment.has(note.commitment)) {
+      byCommitment.set(note.commitment, note);
+    }
+  }
+  return [...byCommitment.values()].sort((a, b) => a.leafIndex - b.leafIndex);
+}
+
+export type RescanResult = {
+  vault: StoredNoteVault;
+  depositsMatched: number;
+  depositsSkipped: number;
+  eventsParsed: number;
+};
+
+/**
+ * Rebuild local vault from chain events + mnemonic.
+ * Matches derivation indices for your deposits; keeps payment-imported notes.
+ */
+export async function rescanVaultFromChain(params: {
+  mnemonic: string;
+  ownerPubkey: string;
+  existingVault?: StoredNoteVault;
+  maxDerivationScan?: number;
+  onProgress?: (message: string) => void;
+}): Promise<RescanResult> {
+  const mnemonic = normalizeMnemonic(params.mnemonic);
+  const maxScan = params.maxDerivationScan ?? DEFAULT_MAX_DERIVATION_SCAN;
+  const existing = params.existingVault ?? defaultVault();
+
+  const events = await fetchVaultChainEvents();
+  const chainCommitments = rebuildChainCommitments(events);
+  const myDeposits = events.filter(
+    (e): e is VaultDepositEvent =>
+      e.kind === "deposit" && e.depositor === params.ownerPubkey
+  );
+
+  const usedIndices = new Set<number>();
+  const notes: Note[] = [];
+  let depositsMatched = 0;
+  let depositsSkipped = 0;
+
+  for (const deposit of myDeposits) {
+    const derivationIndex = await findDerivationIndex({
+      mnemonic,
+      amount: deposit.amount,
+      commitment: deposit.commitment,
+      usedIndices,
+      maxScan,
+      onProgress: (c, t) =>
+        params.onProgress?.(`Matching deposit index ${c}/${t}…`),
+    });
+
+    if (derivationIndex === null) {
+      depositsSkipped += 1;
+      continue;
+    }
+
+    usedIndices.add(derivationIndex);
+    const { secret, nullifierSecret } = deriveNoteSecrets(mnemonic, derivationIndex);
+    const note = await createNote({
+      valueStroops: deposit.amount,
+      ownerPubkey: params.ownerPubkey,
+      secret,
+      nullifierSecret,
+      commitmentHex: deposit.commitment,
+      leafIndex: deposit.leafIndex,
+      derivationIndex,
+    });
+
+    try {
+      const nullifier = await computeNullifier(nullifierSecret, deposit.commitment);
+      const spent = await isNullifierSpentOnChain(nullifier, params.ownerPubkey);
+      if (spent) note.status = "spent";
+    } catch {
+      // keep unspent if RPC check fails
+    }
+
+    notes.push(note);
+    depositsMatched += 1;
+  }
+
+  const mergedNotes = mergeIncomingNotes(notes, existing.notes);
+  const maxUsedIndex =
+    usedIndices.size > 0 ? Math.max(...usedIndices) : -1;
+  const nextDerivationIndex = Math.max(
+    existing.nextDerivationIndex,
+    maxUsedIndex + 1
+  );
+
+  const vault: StoredNoteVault = {
+    version: 2,
+    mnemonic,
+    nextDerivationIndex,
+    notes: mergedNotes,
+    chainCommitments,
+  };
+
+  return {
+    vault,
+    depositsMatched,
+    depositsSkipped,
+    eventsParsed: events.length,
+  };
+}

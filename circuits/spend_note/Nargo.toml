@@ -1,0 +1,8 @@
+[package]
+name = "spend_note"
+type = "bin"
+authors = ["zk-notes"]
+compiler_version = ">=1.0.0"
+
+[dependencies]
+poseidon = { tag = "v0.3.0", git = "https://github.com/noir-lang/poseidon" }
