@@ -97,3 +97,97 @@ export async function merkleWitness(
   const root = await merkleRoot(leaves);
   return { path, indices, root };
 }
+
+function hexToBigInt(hex: string): bigint {
+  const h = hex.startsWith("0x") ? hex : `0x${hex}`;
+  return BigInt(h);
+}
+
+async function alignedRangeRoot(
+  start: number,
+  width: number,
+  leafCount: number,
+  leafAt: (index: number) => bigint | undefined,
+  zeros: bigint[],
+  level: number
+): Promise<bigint> {
+  const end = Math.min(leafCount, start + width);
+  const actual = end - start;
+  if (actual <= 0) return zeros[level];
+  if (actual === 1) {
+    const leaf = leafAt(start);
+    if (leaf === undefined) {
+      throw new Error(`Missing leaf commitment at index ${start}`);
+    }
+    return leaf;
+  }
+  const half = width / 2;
+  const left = await alignedRangeRoot(start, half, leafCount, leafAt, zeros, level + 1);
+  const right = await alignedRangeRoot(
+    start + half,
+    half,
+    leafCount,
+    leafAt,
+    zeros,
+    level + 1
+  );
+  return hashPair(left, right);
+}
+
+/** Witness using on-chain incremental tree filled/zeros (no dense leaf list). */
+export async function merkleWitnessFromTreeState(params: {
+  leafCount: number;
+  targetIndex: number;
+  targetLeaf: bigint;
+  filled: bigint[];
+  zeros: bigint[];
+  leafAt: (index: number) => bigint | undefined;
+}): Promise<{ path: bigint[]; indices: boolean[]; root: bigint }> {
+  const { leafCount, targetIndex, targetLeaf, filled, zeros, leafAt } = params;
+  const path: bigint[] = new Array(TREE_HEIGHT).fill(0n);
+  const indices: boolean[] = new Array(TREE_HEIGHT).fill(false);
+
+  let index = targetIndex;
+  for (let level = 0; level < TREE_HEIGHT; level++) {
+    const isRight = (index & 1) === 1;
+    indices[level] = isRight;
+    if (isRight) {
+      path[level] = filled[level];
+    } else {
+      const siblingIndex = index | (1 << level);
+      if (siblingIndex >= leafCount) {
+        path[level] = zeros[level];
+      } else {
+        const width = 1 << level;
+        path[level] = await alignedRangeRoot(
+          siblingIndex,
+          width,
+          leafCount,
+          leafAt,
+          zeros,
+          level
+        );
+      }
+    }
+    index >>= 1;
+  }
+
+  let current = targetLeaf;
+  for (let level = 0; level < TREE_HEIGHT; level++) {
+    current = indices[level]
+      ? await hashPair(path[level], current)
+      : await hashPair(current, path[level]);
+  }
+
+  return { path, indices, root: current };
+}
+
+export function fieldHexListToBigInt(
+  filled: string[],
+  zeros: string[]
+): { filled: bigint[]; zeros: bigint[] } {
+  return {
+    filled: filled.map(hexToBigInt),
+    zeros: zeros.map(hexToBigInt),
+  };
+}

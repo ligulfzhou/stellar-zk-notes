@@ -1,15 +1,14 @@
-import { computeCommitment, computeNullifier } from "./commitment-client";
+import { computeNullifier } from "./commitment-client";
 import { hexEquals } from "./bytes";
-import { deriveNoteSecrets, normalizeMnemonic } from "./mnemonic";
 import { createNote } from "./note";
 import type { Note, StoredNoteVault } from "./note-types";
 import { defaultVault } from "./note-types";
+import { deriveNoteSecretsFromSeed } from "./root-seed";
 import {
-  fetchVaultChainEvents,
+  fetchVaultChainState,
   isNullifierSpentOnChain,
-  rebuildChainCommitments,
-  type VaultDepositEvent,
-} from "./vault-events";
+} from "./vault-events-client";
+import type { VaultDepositEvent } from "./vault-events";
 
 const DEFAULT_MAX_DERIVATION_SCAN = 256;
 const BATCH_SIZE = 16;
@@ -38,8 +37,10 @@ async function computeCommitmentsBatch(
   return data.commitments;
 }
 
+type DeriveFn = (index: number) => { secret: string; nullifierSecret: string };
+
 async function findDerivationIndex(params: {
-  mnemonic: string;
+  deriveAt: DeriveFn;
   amount: bigint;
   commitment: string;
   usedIndices: Set<number>;
@@ -51,7 +52,7 @@ async function findDerivationIndex(params: {
     const batch = [];
     for (let i = start; i < end; i++) {
       if (params.usedIndices.has(i)) continue;
-      const { secret, nullifierSecret } = deriveNoteSecrets(params.mnemonic, i);
+      const { secret, nullifierSecret } = params.deriveAt(i);
       batch.push({
         id: String(i),
         value: params.amount.toString(),
@@ -89,23 +90,23 @@ export type RescanResult = {
   eventsParsed: number;
 };
 
-/**
- * Rebuild local vault from chain events + mnemonic.
- * Matches derivation indices for your deposits; keeps payment-imported notes.
- */
+/** Rebuild local vault from chain events + unlocked passkey root. */
 export async function rescanVaultFromChain(params: {
-  mnemonic: string;
   ownerPubkey: string;
+  rootSeed: Uint8Array;
   existingVault?: StoredNoteVault;
   maxDerivationScan?: number;
   onProgress?: (message: string) => void;
 }): Promise<RescanResult> {
-  const mnemonic = normalizeMnemonic(params.mnemonic);
   const maxScan = params.maxDerivationScan ?? DEFAULT_MAX_DERIVATION_SCAN;
   const existing = params.existingVault ?? defaultVault();
 
-  const events = await fetchVaultChainEvents();
-  const chainCommitments = rebuildChainCommitments(events);
+  const chainState = await fetchVaultChainState({
+    reader: params.ownerPubkey,
+    localCommitments: existing.chainCommitments,
+  });
+  const events = chainState.events;
+  const chainCommitments = chainState.commitments;
   const myDeposits = events.filter(
     (e): e is VaultDepositEvent =>
       e.kind === "deposit" && e.depositor === params.ownerPubkey
@@ -117,14 +118,15 @@ export async function rescanVaultFromChain(params: {
   let depositsSkipped = 0;
 
   for (const deposit of myDeposits) {
+    params.onProgress?.("Matching passkey-derived indices…");
     const derivationIndex = await findDerivationIndex({
-      mnemonic,
+      deriveAt: (i) => deriveNoteSecretsFromSeed(params.rootSeed, i),
       amount: deposit.amount,
       commitment: deposit.commitment,
       usedIndices,
       maxScan,
       onProgress: (c, t) =>
-        params.onProgress?.(`Matching deposit index ${c}/${t}…`),
+        params.onProgress?.(`Passkey match ${c}/${t}…`),
     });
 
     if (derivationIndex === null) {
@@ -133,7 +135,11 @@ export async function rescanVaultFromChain(params: {
     }
 
     usedIndices.add(derivationIndex);
-    const { secret, nullifierSecret } = deriveNoteSecrets(mnemonic, derivationIndex);
+    const { secret, nullifierSecret } = deriveNoteSecretsFromSeed(
+      params.rootSeed,
+      derivationIndex
+    );
+
     const note = await createNote({
       valueStroops: deposit.amount,
       ownerPubkey: params.ownerPubkey,
@@ -165,8 +171,8 @@ export async function rescanVaultFromChain(params: {
   );
 
   const vault: StoredNoteVault = {
-    version: 2,
-    mnemonic,
+    ...existing,
+    version: 3,
     nextDerivationIndex,
     notes: mergedNotes,
     chainCommitments,

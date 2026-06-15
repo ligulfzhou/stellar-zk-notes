@@ -3,17 +3,24 @@ import {
   Address,
   Contract,
   Networks,
+  Transaction,
   TransactionBuilder,
   nativeToScVal,
-  rpc,
-  scValToNative,
   xdr,
 } from "@stellar/stellar-sdk";
 import { fieldDecToBytes32, fieldHexToBytes32 } from "./field";
-import { SOROBAN_RPC_URL, STELLAR_NETWORK, VAULT_CONTRACT_ID } from "./config";
+import { formatError } from "./format-error";
+import { STELLAR_NETWORK, VAULT_CONTRACT_ID } from "./config";
+import {
+  accountExistsViaApi,
+  fetchStellarAccount,
+  prepareTransactionViaApi,
+  sendTransactionViaApi,
+} from "./soroban-client";
+import { authorizePreparedTransaction } from "./soroban-auth";
 
 function networkPassphrase(): string {
-  return STELLAR_NETWORK === "mainnet"
+  return STELLAR_NETWORK.toLowerCase() === "mainnet"
     ? Networks.PUBLIC
     : Networks.TESTNET;
 }
@@ -25,10 +32,45 @@ function requireVaultId(): string {
   return VAULT_CONTRACT_ID;
 }
 
-function rpcServer(): rpc.Server {
-  return new rpc.Server(SOROBAN_RPC_URL, {
-    allowHttp: STELLAR_NETWORK !== "mainnet",
+function isTestnet(): boolean {
+  return STELLAR_NETWORK.toLowerCase() !== "mainnet";
+}
+
+/** Create and fund a testnet account via Friendbot when missing on-chain. */
+export async function ensureAccountOnNetwork(publicKey: string): Promise<void> {
+  if (!isTestnet()) return;
+  if (await accountExistsViaApi(publicKey)) return;
+
+  const res = await fetch("/api/fund-testnet", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ address: publicKey }),
   });
+  const data = (await res.json()) as { error?: string; funded?: boolean };
+  if (!res.ok || !data.funded) {
+    throw new Error(
+      data.error ??
+        "Could not fund testnet account — open https://lab.stellar.org/account/create and fund this G… address"
+    );
+  }
+
+  for (let attempt = 0; attempt < 12; attempt++) {
+    if (await accountExistsViaApi(publicKey)) return;
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+  }
+
+  throw new Error(
+    "Testnet account funding submitted but not visible yet — wait a few seconds and retry"
+  );
+}
+
+async function loadSourceAccount(sourcePublicKey: string): Promise<Account> {
+  await ensureAccountOnNetwork(sourcePublicKey);
+  try {
+    return await fetchStellarAccount(sourcePublicKey);
+  } catch (err) {
+    throw new Error(`Account lookup failed: ${formatError(err)}`);
+  }
 }
 
 async function signAndSend(
@@ -36,40 +78,63 @@ async function signAndSend(
   build: (source: Account) => Promise<TransactionBuilder>,
   signTransaction: (xdr: string) => Promise<string>
 ): Promise<string> {
-  const server = rpcServer();
-  const source = await server.getAccount(sourcePublicKey);
+  const source = await loadSourceAccount(sourcePublicKey);
   let builder = await build(source);
   let tx = builder.setTimeout(180).build();
-  tx = await server.prepareTransaction(tx);
-  const signed = await signTransaction(tx.toXDR());
-  const signedTx = TransactionBuilder.fromXDR(signed, networkPassphrase());
-  const result = await server.sendTransaction(signedTx);
-  if (result.status !== "PENDING") {
-    throw new Error(`Transaction failed: ${result.status}`);
+  try {
+    const { xdr: preparedXdr, latestLedger } = await prepareTransactionViaApi(
+      tx.toXDR()
+    );
+    const authedXdr = await authorizePreparedTransaction(
+      preparedXdr,
+      sourcePublicKey,
+      latestLedger + 100
+    );
+    tx = TransactionBuilder.fromXDR(
+      authedXdr,
+      networkPassphrase()
+    ) as Transaction;
+  } catch (err) {
+    throw new Error(formatError(err));
   }
-  return result.hash;
+  let signed: string;
+  try {
+    signed = await signTransaction(tx.toXDR());
+  } catch (err) {
+    throw new Error(formatError(err) || "Wallet signing cancelled");
+  }
+  try {
+    return await sendTransactionViaApi(signed);
+  } catch (err) {
+    throw new Error(formatError(err));
+  }
 }
 
 export async function getVaultLeafCount(
   sourcePublicKey: string
 ): Promise<number> {
-  const server = rpcServer();
-  const contract = new Contract(requireVaultId());
-  const source = await server.getAccount(sourcePublicKey);
-
-  const tx = new TransactionBuilder(source, {
-    fee: "100",
-    networkPassphrase: networkPassphrase(),
-  })
-    .addOperation(contract.call("leaf_count"))
-    .setTimeout(30)
-    .build();
-
-  const sim = await server.simulateTransaction(tx);
-  if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
-    return 0;
+  const res = await fetch(
+    `/api/vault-leaf-count?reader=${encodeURIComponent(sourcePublicKey)}`
+  );
+  const data = (await res.json()) as { leafCount?: number; error?: string };
+  if (!res.ok) {
+    throw new Error(data.error ?? "leaf count failed");
   }
-  return Number(scValToNative(sim.result.retval));
+  return data.leafCount ?? 0;
+}
+
+async function waitForLeafCountIncrease(
+  sourcePublicKey: string,
+  before: number,
+  attempts = 8,
+  delayMs = 1500
+): Promise<number> {
+  for (let i = 0; i < attempts; i++) {
+    const count = await getVaultLeafCount(sourcePublicKey);
+    if (count > before) return count;
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+  return getVaultLeafCount(sourcePublicKey);
 }
 
 export async function depositToVault(params: {
@@ -99,8 +164,9 @@ export async function depositToVault(params: {
     },
     params.signTransaction
   );
-  const after = await getVaultLeafCount(params.sourcePublicKey).catch(
-    () => before + 1
+  const after = await waitForLeafCountIncrease(
+    params.sourcePublicKey,
+    before
   );
   return { txHash, leafIndex: Math.max(0, after - 1) };
 }

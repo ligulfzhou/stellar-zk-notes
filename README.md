@@ -15,17 +15,18 @@ ZK is load-bearing: spending requires a Noir proof verified on-chain via UltraHo
 
 ### Wallet features
 
-- **zk1 receive address** — X25519 key derived from recovery phrase; share `zk1:testnet:…` instead of G… for shielded payments
+- **zk1 receive address** — X25519 key derived from passkey; share `zk1:testnet:…` instead of G… for shielded payments
 - **On-chain encrypted notes** — send to zk1 stores AES-GCM ciphertext + ephemeral key in `ShieldedSendEvent`
-- **Mnemonic derivation** — deposit secrets from BIP39 + HKDF (`derivationIndex` in IndexedDB)
+- **Passkey root (WebAuthn PRF)** — no seed phrase; Touch ID / Face ID derives note secrets
+- **Recovery passkey** — backup authenticator wraps root seed for cross-device recovery
 - **Chain rescan** — recover deposits on a new browser via vault events + trial derivation indices
-- **PIN-encrypted phrase** — optional local encryption in Notes tab
+- **Stellar Wallets Kit** — Freighter, xBull, Albedo, Lobstr, WalletConnect, and more
 - **Payment file fallback** — off-chain JSON when recipient only has a G… address
 
 ## Architecture
 
 ```
-web/          → Next.js wallet (Freighter + bb.js proving + IndexedDB notes)
+web/          → Next.js wallet (Stellar Wallets Kit + passkey + IndexedDB notes)
 circuits/     → Noir spend_note circuit
 contracts/    → Soroban vault + verifier
 cli/          → Rust developer CLI
@@ -87,7 +88,7 @@ cp web/.env.local.example web/.env.local
 # NEXT_PUBLIC_VAULT_CONTRACT_ID is pre-filled in web/.env.local after deploy
 cd web && npm run dev
 
-# CLI: derive zk1 address from mnemonic
+# CLI: derive zk1 address from passkey root (dev helper uses test mnemonic in script)
 cargo run -p zk-notes -- shielded-address "twelve words ..."
 ```
 

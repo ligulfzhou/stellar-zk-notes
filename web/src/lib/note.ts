@@ -1,6 +1,6 @@
 import type { Note } from "./note-types";
 export type { Note, NoteStatus, StoredNoteVault } from "./note-types";
-export { noteShieldedAddress, sumUnspentNotes } from "./note-types";
+export { noteShieldedAddress, sumUnspentNotes, hasPasskey } from "./note-types";
 
 export async function createNote(params: {
   valueStroops: bigint;

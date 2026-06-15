@@ -1,27 +1,11 @@
-import { hkdf } from "@noble/hashes/hkdf.js";
-import { sha256 } from "@noble/hashes/sha2.js";
-import { x25519 } from "@noble/curves/ed25519.js";
-import { mnemonicToSeedSync } from "@scure/bip39";
-import { normalizeMnemonic } from "./mnemonic";
+import { deriveShieldedReceiveKeysFromSeed } from "./root-seed";
 
-const HKDF_SALT = new TextEncoder().encode("zk-notes-shielded-v1");
+export type ShieldedReceiveKeys = import("./root-seed").ShieldedReceiveKeys;
 
-export type ShieldedReceiveKeys = {
-  secretKey: Uint8Array;
-  publicKey: Uint8Array;
-};
-
-export function deriveShieldedReceiveKeys(mnemonic: string): ShieldedReceiveKeys {
-  const seed = mnemonicToSeedSync(normalizeMnemonic(mnemonic));
-  const scalar = hkdf(
-    sha256,
-    seed,
-    HKDF_SALT,
-    new TextEncoder().encode("receive-sk"),
-    32
-  );
-  const { secretKey, publicKey } = x25519.keygen(scalar);
-  return { secretKey, publicKey };
+export function deriveShieldedReceiveKeysFromRoot(
+  rootSeed: Uint8Array
+): ShieldedReceiveKeys {
+  return deriveShieldedReceiveKeysFromSeed(rootSeed);
 }
 
 export function encodeZk1Address(

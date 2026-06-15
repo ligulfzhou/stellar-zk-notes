@@ -5,17 +5,15 @@ import {
   eventToActivityLabel,
   scanIncomingEncryptedNotes,
 } from "@/lib/incoming-scanner";
-import { getVaultLeafCount } from "@/lib/stellar";
-import {
-  fetchVaultChainEvents,
-  rebuildChainCommitments,
-} from "@/lib/vault-events";
-import { getWalletMnemonic, hasEncryptedMnemonic, loadVault } from "@/lib/note-store";
+import { fetchVaultChainState } from "@/lib/vault-events-client";
+import { loadVault } from "@/lib/note-store";
 import { persistFullVault, useWalletStore } from "@/store/useWalletStore";
+import { usePasskeyStore } from "@/store/usePasskeyStore";
 
 export function DashboardPanel() {
   const { publicKey, notes, chainCommitments, shieldedBalance, refreshNotes } =
     useWalletStore();
+  const { unlocked, unlock, rootSeed } = usePasskeyStore();
   const [chainLeafCount, setChainLeafCount] = useState<number | null>(null);
   const [activity, setActivity] = useState<string[]>([]);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
@@ -30,13 +28,10 @@ export function DashboardPanel() {
     void (async () => {
       if (!publicKey) return;
       try {
-        const [count, events] = await Promise.all([
-          getVaultLeafCount(publicKey),
-          fetchVaultChainEvents(),
-        ]);
-        setChainLeafCount(count);
+        const state = await fetchVaultChainState({ reader: publicKey });
+        setChainLeafCount(state.leafCount);
         setActivity(
-          events
+          state.events
             .slice(-8)
             .reverse()
             .map((e) => eventToActivityLabel(e))
@@ -51,33 +46,29 @@ export function DashboardPanel() {
     if (!publicKey) return;
     setSyncStatus("Syncing…");
     try {
-      const encrypted = await hasEncryptedMnemonic();
-      const mnemonic = await getWalletMnemonic();
-      const vault = await loadVault();
-      if (!mnemonic) {
-        setSyncStatus(
-          encrypted
-            ? "Unlock recovery phrase in Notes (PIN) first"
-            : "Import recovery phrase first"
-        );
-        return;
+      let seed = rootSeed;
+      if (!seed) {
+        try {
+          seed = await unlock();
+        } catch {
+          setSyncStatus("Unlock passkey first");
+          return;
+        }
       }
-      const events = await fetchVaultChainEvents();
-      const chain = rebuildChainCommitments(events);
+      const vault = await loadVault(publicKey);
       const incoming = await scanIncomingEncryptedNotes({
-        mnemonic,
         ownerPubkey: publicKey,
-        vault: { ...vault, chainCommitments: chain },
+        rootSeed: seed,
+        vault,
       });
       await persistFullVault({
         ...vault,
-        mnemonic,
         notes: incoming.notes,
         chainCommitments: incoming.chainCommitments,
       });
       await refreshNotes();
       setSyncStatus(
-        `Synced: ${incoming.imported} encrypted note(s), ${chain.length} commitments`
+        `Synced: ${incoming.imported} encrypted note(s), ${incoming.chainCommitments.length} commitments`
       );
     } catch (err) {
       setSyncStatus(err instanceof Error ? err.message : "Sync failed");
@@ -122,7 +113,7 @@ export function DashboardPanel() {
       </Panel>
       <Panel title="How it works">
         <ol className="list-decimal space-y-2 pl-5 text-sm text-zinc-300">
-          <li>Deposit → commitment on-chain, secrets from recovery phrase.</li>
+          <li>Deposit → commitment on-chain, secrets from passkey PRF.</li>
           <li>Send to zk1… → ECDH-encrypted note on-chain.</li>
           <li>Withdraw → ZK proof + public payout.</li>
         </ol>

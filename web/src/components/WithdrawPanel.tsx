@@ -1,15 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import { signTransaction } from "@stellar/freighter-api";
-import { Networks } from "@stellar/stellar-sdk";
+import { signTransactionXdr } from "@/lib/wallet";
 import { resolveNoteSecretsFromVault } from "@/lib/note-secrets";
 import { proofBytesFromHex } from "@/lib/proof";
 import { encodePublicInputs, withdrawFromVault } from "@/lib/stellar";
+import { formatError } from "@/lib/format-error";
 import { persistVaultState, useWalletStore } from "@/store/useWalletStore";
+import { usePasskeyStore } from "@/store/usePasskeyStore";
 
 export function WithdrawPanel() {
   const { publicKey, notes, chainCommitments, refreshNotes } = useWalletStore();
+  const { unlocked, unlock } = usePasskeyStore();
   const [noteId, setNoteId] = useState("");
   const [destination, setDestination] = useState("");
   const [loading, setLoading] = useState(false);
@@ -20,7 +22,7 @@ export function WithdrawPanel() {
 
   async function handleWithdraw() {
     if (!publicKey) {
-      setError("Connect Freighter first");
+      setError("Connect wallet first");
       return;
     }
     const note = unspent.find((n) => n.id === noteId);
@@ -36,6 +38,36 @@ export function WithdrawPanel() {
     setLoading(true);
     setError(null);
     try {
+      if (!unlocked) {
+        setStatus("Unlocking passkey…");
+        await unlock();
+      }
+
+      setStatus("Loading on-chain Merkle tree…");
+      const chainRes = await fetch("/api/chain-commitments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reader: publicKey,
+          localCommitments: chainCommitments,
+          notes: unspent.map((n) => ({
+            leafIndex: n.leafIndex,
+            commitment: n.commitment,
+          })),
+        }),
+      });
+      const chainData = (await chainRes.json()) as {
+        error?: string;
+        commitments?: string[];
+        merkleRoot?: string | null;
+        leafCount?: number | null;
+        treeState?: { filled: string[]; zeros: string[] } | null;
+      };
+      if (!chainRes.ok || !chainData.commitments) {
+        throw new Error(chainData.error ?? "Failed to load chain commitments");
+      }
+      const chain = chainData.commitments;
+
       setStatus("Generating withdraw witness…");
       const spendSecrets = await resolveNoteSecretsFromVault(note);
       const proveRes = await fetch("/api/prove-spend", {
@@ -47,7 +79,11 @@ export function WithdrawPanel() {
           secret: spendSecrets.secret,
           nullifierSecret: spendSecrets.nullifierSecret,
           leafIndex: note.leafIndex,
-          commitments: chainCommitments,
+          leafCount: chainData.leafCount ?? chain.length,
+          onChainMerkleRoot: chainData.merkleRoot ?? undefined,
+          commitments: chain,
+          noteCommitment: note.commitment,
+          treeState: chainData.treeState ?? undefined,
         }),
       });
       const prove = (await proveRes.json()) as {
@@ -78,23 +114,17 @@ export function WithdrawPanel() {
         merkleRootHex: prove.merkleRoot,
         publicInputs,
         proofBytes: proofBytesFromHex(prove.proofHex),
-        signTransaction: async (xdr) => {
-          const signed = await signTransaction(xdr, {
-            networkPassphrase: Networks.TESTNET,
-          });
-          if ("error" in signed && signed.error) throw new Error(signed.error);
-          return signed.signedTxXdr;
-        },
+        signTransaction: async (xdr) => signTransactionXdr(xdr, publicKey),
       });
 
       const updatedNotes = notes.map((n) =>
         n.id === note.id ? { ...n, status: "spent" as const } : n
       );
-      await persistVaultState(updatedNotes, chainCommitments);
+      await persistVaultState(updatedNotes, chain);
       await refreshNotes();
       setStatus(`Withdrawn. Tx: ${txHash.slice(0, 12)}…`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Withdraw failed");
+      setError(formatError(err) || "Withdraw failed");
       setStatus(null);
     } finally {
       setLoading(false);

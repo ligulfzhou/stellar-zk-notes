@@ -7,7 +7,9 @@ import { DepositPanel } from "@/components/DepositPanel";
 import { NotesPanel } from "@/components/NotesPanel";
 import { SendPanel } from "@/components/SendPanel";
 import { WithdrawPanel } from "@/components/WithdrawPanel";
+import { PasskeyUnlockBanner } from "@/components/PasskeyUnlockBanner";
 import { useWalletStore } from "@/store/useWalletStore";
+import { initWalletsKit } from "@/lib/wallet";
 
 const tabs = [
   { id: "dashboard", label: "Dashboard" },
@@ -21,6 +23,7 @@ export function WalletApp() {
   const { activeTab, setTab, hydrate, error } = useWalletStore();
 
   useEffect(() => {
+    initWalletsKit();
     void hydrate();
   }, [hydrate]);
 
@@ -44,6 +47,8 @@ export function WalletApp() {
             {error}
           </div>
         ) : null}
+
+        <PasskeyUnlockBanner />
 
         <nav className="mb-8 flex flex-wrap gap-2">
           {tabs.map((tab) => (

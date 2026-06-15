@@ -1,8 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { signTransaction } from "@stellar/freighter-api";
-import { Networks } from "@stellar/stellar-sdk";
+import { signTransactionXdr } from "@/lib/wallet";
 import { createNote } from "@/lib/note";
 import { randomField } from "@/lib/field";
 import { encryptNoteForRecipient } from "@/lib/ecdh-delivery";
@@ -18,10 +17,14 @@ import {
   parseZk1Address,
 } from "@/lib/shielded-keys";
 import { encodePublicInputs, shieldedSendToVault } from "@/lib/stellar";
+import { formatError } from "@/lib/format-error";
+import { upsertChainCommitment } from "@/lib/vault-events";
 import { persistVaultState, useWalletStore } from "@/store/useWalletStore";
+import { usePasskeyStore } from "@/store/usePasskeyStore";
 
 export function SendPanel() {
   const { publicKey, notes, chainCommitments, refreshNotes } = useWalletStore();
+  const { unlocked, unlock } = usePasskeyStore();
   const [noteId, setNoteId] = useState("");
   const [recipient, setRecipient] = useState("");
   const [loading, setLoading] = useState(false);
@@ -29,11 +32,12 @@ export function SendPanel() {
   const [error, setError] = useState<string | null>(null);
 
   const unspent = notes.filter((n) => n.status === "unspent");
+  const recipientTrimmed = recipient.trim();
   const sendToSelf = Boolean(
-    publicKey && recipient && publicKey === recipient
+    publicKey && recipientTrimmed && publicKey === recipientTrimmed
   );
-  const zk1Recipient = isZk1Address(recipient);
-  const parsedZk1 = zk1Recipient ? parseZk1Address(recipient) : null;
+  const zk1Recipient = isZk1Address(recipientTrimmed);
+  const parsedZk1 = zk1Recipient ? parseZk1Address(recipientTrimmed) : null;
 
   useEffect(() => {
     if (publicKey && !recipient) setRecipient(publicKey);
@@ -41,7 +45,7 @@ export function SendPanel() {
 
   async function handleSend() {
     if (!publicKey) {
-      setError("Connect Freighter first");
+      setError("Connect wallet first");
       return;
     }
     const note = unspent.find((n) => n.id === noteId);
@@ -49,8 +53,12 @@ export function SendPanel() {
       setError("Select a note to spend");
       return;
     }
-    if (!recipient.startsWith("G") && !zk1Recipient) {
+    if (!recipientTrimmed.startsWith("G") && !zk1Recipient) {
       setError("Enter zk1… shielded address or Stellar G… (self)");
+      return;
+    }
+    if (recipientTrimmed.startsWith("G") && recipientTrimmed.length !== 56) {
+      setError("Stellar address must be 56 characters (G…)");
       return;
     }
     if (zk1Recipient && !parsedZk1) {
@@ -61,6 +69,36 @@ export function SendPanel() {
     setLoading(true);
     setError(null);
     try {
+      if (!unlocked) {
+        setStatus("Unlocking passkey…");
+        await unlock();
+      }
+
+      setStatus("Loading on-chain Merkle tree…");
+      const chainRes = await fetch("/api/chain-commitments", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          reader: publicKey,
+          localCommitments: chainCommitments,
+          notes: unspent.map((n) => ({
+            leafIndex: n.leafIndex,
+            commitment: n.commitment,
+          })),
+        }),
+      });
+      const chainData = (await chainRes.json()) as {
+        error?: string;
+        commitments?: string[];
+        merkleRoot?: string | null;
+        leafCount?: number | null;
+        treeState?: { filled: string[]; zeros: string[] } | null;
+      };
+      if (!chainRes.ok || !chainData.commitments) {
+        throw new Error(chainData.error ?? "Failed to load chain commitments");
+      }
+      const chain = chainData.commitments;
+
       setStatus("Generating ZK witness…");
       const spendSecrets = await resolveNoteSecretsFromVault(note);
 
@@ -69,7 +107,7 @@ export function SendPanel() {
       let newDerivationIndex: number | undefined;
 
       if (sendToSelf) {
-        const derived = await deriveAndAllocateNoteSecrets();
+        const derived = await deriveAndAllocateNoteSecrets(publicKey!);
         newSecret = derived.secret;
         newNullifierSecret = derived.nullifierSecret;
         newDerivationIndex = derived.derivationIndex;
@@ -87,7 +125,11 @@ export function SendPanel() {
           secret: spendSecrets.secret,
           nullifierSecret: spendSecrets.nullifierSecret,
           leafIndex: note.leafIndex,
-          commitments: chainCommitments,
+          leafCount: chainData.leafCount ?? chain.length,
+          onChainMerkleRoot: chainData.merkleRoot ?? undefined,
+          commitments: chain,
+          noteCommitment: note.commitment,
+          treeState: chainData.treeState ?? undefined,
           newSecret,
           newNullifierSecret,
         }),
@@ -105,7 +147,7 @@ export function SendPanel() {
         throw new Error(prove.error ?? "Prove API failed");
       }
 
-      const leafIndex = chainCommitments.length;
+      const leafIndex = chainData.leafCount ?? chain.length;
       let epkBytes: Uint8Array | undefined;
       let encryptedNoteBytes: Uint8Array | undefined;
 
@@ -139,19 +181,17 @@ export function SendPanel() {
         proofBytes: proofBytesFromHex(prove.proofHex),
         epkBytes,
         encryptedNoteBytes,
-        signTransaction: async (xdr) => {
-          const signed = await signTransaction(xdr, {
-            networkPassphrase: Networks.TESTNET,
-          });
-          if ("error" in signed && signed.error) throw new Error(signed.error);
-          return signed.signedTxXdr;
-        },
+        signTransaction: async (xdr) => signTransactionXdr(xdr, publicKey),
       });
 
       const updatedNotes = notes.map((n) =>
         n.id === note.id ? { ...n, status: "spent" as const } : n
       );
-      const updatedChain = [...chainCommitments, prove.newCommitment!];
+      const updatedChain = upsertChainCommitment(
+        chain,
+        leafIndex,
+        prove.newCommitment!
+      );
 
       if (sendToSelf) {
         const recipientNote = await createNote({
@@ -176,7 +216,7 @@ export function SendPanel() {
       } else if (!sendToSelf) {
         downloadPaymentEnvelope(
           buildPaymentEnvelope({
-            recipient,
+            recipient: recipientTrimmed,
             sender: publicKey,
             valueStroops: note.value,
             secret: newSecret,
@@ -187,13 +227,13 @@ export function SendPanel() {
           })
         );
         setStatus(
-          `Sent (legacy G…). Payment file downloaded. Tx: ${txHash.slice(0, 12)}…`
+          `Sent to G… address. Payment file downloaded. Tx: ${txHash.slice(0, 12)}…`
         );
       } else {
         setStatus(`Sent. Tx: ${txHash.slice(0, 12)}…`);
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Send failed");
+      setError(formatError(err) || "Send failed");
       setStatus(null);
     } finally {
       setLoading(false);

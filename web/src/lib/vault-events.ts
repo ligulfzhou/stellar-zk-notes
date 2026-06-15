@@ -7,6 +7,7 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { bytesToHex0x, normalizeHex } from "./bytes";
+import { formatError } from "./format-error";
 import { SOROBAN_RPC_URL, STELLAR_NETWORK, VAULT_CONTRACT_ID } from "./config";
 
 export type VaultDepositEvent = {
@@ -141,21 +142,51 @@ function parseVaultEvent(
   return null;
 }
 
-/** Paginate Soroban RPC for all vault contract events. */
+/** How far back Soroban RPC reliably indexes contract events (empirical testnet limit). */
+const EVENT_INDEX_LOOKBACK = 10_000;
+
+async function resolveEventsStartLedger(server: rpc.Server): Promise<number> {
+  const [latest, health] = await Promise.all([
+    server.getLatestLedger(),
+    server.getHealth(),
+  ]);
+  const retention = health.ledgerRetentionWindow ?? 120_960;
+  const minAllowed = Math.max(health.oldestLedger, latest.sequence - retention + 16);
+  const recentStart = latest.sequence - EVENT_INDEX_LOOKBACK;
+  return Math.max(minAllowed, recentStart);
+}
+
+async function getEventsPage(
+  server: rpc.Server,
+  vaultId: string,
+  startLedger: number,
+  cursor?: string
+): Promise<rpc.Api.GetEventsResponse> {
+  const filters = [{ type: "contract" as const, contractIds: [vaultId] }];
+  try {
+    return cursor
+      ? await server.getEvents({ filters, cursor, limit: 500 })
+      : await server.getEvents({ filters, startLedger, limit: 500 });
+  } catch (err) {
+    const message = formatError(err);
+    const match = message.match(/ledger range:\s*(\d+)\s*-\s*(\d+)/i);
+    if (!match || cursor) throw err;
+    const minLedger = Number(match[1]);
+    return server.getEvents({ filters, startLedger: minLedger, limit: 500 });
+  }
+}
+
+/** Paginate Soroban RPC for vault contract events (recent window + pagination). */
 export async function fetchVaultChainEvents(): Promise<VaultChainEvent[]> {
   const server = rpcServer();
   const vaultId = requireVaultId();
-  const latest = await server.getLatestLedger();
-  const startLedger = Math.max(1, latest.sequence - 300_000);
-  const filters = [{ type: "contract" as const, contractIds: [vaultId] }];
+  const startLedger = await resolveEventsStartLedger(server);
 
   const parsed: VaultChainEvent[] = [];
   let cursor: string | undefined;
 
   for (let page = 0; page < 50; page++) {
-    const response = cursor
-      ? await server.getEvents({ filters, cursor, limit: 500 })
-      : await server.getEvents({ filters, startLedger, limit: 500 });
+    const response = await getEventsPage(server, vaultId, startLedger, cursor);
 
     for (const event of response.events) {
       const body = scValToNative(event.value);
@@ -171,21 +202,118 @@ export async function fetchVaultChainEvents(): Promise<VaultChainEvent[]> {
   return parsed;
 }
 
-/** Rebuild on-chain commitment list in Merkle insertion order. */
+/** Rebuild on-chain commitment list in Merkle insertion order (index = leaf slot). */
 export function rebuildChainCommitments(events: VaultChainEvent[]): string[] {
   const slots: string[] = [];
 
   for (const event of events) {
-    if (event.kind === "deposit") {
-      while (slots.length <= event.leafIndex) slots.push("");
-      slots[event.leafIndex] = event.commitment;
-    } else {
-      while (slots.length <= event.leafIndex) slots.push("");
-      slots[event.leafIndex] = event.newCommitment;
+    const commitment =
+      event.kind === "deposit" ? event.commitment : event.newCommitment;
+    while (slots.length <= event.leafIndex) slots.push("");
+    slots[event.leafIndex] = commitment;
+  }
+
+  while (slots.length > 0 && slots[slots.length - 1] === "") {
+    slots.pop();
+  }
+  return slots;
+}
+
+/** Place a commitment at its on-chain leaf index (never append-only). */
+export function upsertChainCommitment(
+  chain: string[],
+  leafIndex: number,
+  commitment: string
+): string[] {
+  const updated = [...chain];
+  while (updated.length <= leafIndex) {
+    updated.push("");
+  }
+  updated[leafIndex] = commitment;
+  while (updated.length > 0 && updated[updated.length - 1] === "") {
+    updated.pop();
+  }
+  return updated;
+}
+
+/** Merge local vault commitments with a (possibly partial) chain scan. */
+export function mergeChainCommitments(
+  local: string[],
+  remote: string[],
+  leafCount?: number | null
+): string[] {
+  const size = Math.max(leafCount ?? 0, remote.length, local.length);
+  const merged: string[] = [];
+  const placed = new Set<string>();
+
+  for (let i = 0; i < size; i++) {
+    const r = remote[i] ?? "";
+    merged.push(r);
+    if (r) placed.add(normalizeHex(r));
+  }
+
+  for (let i = 0; i < local.length; i++) {
+    const commitment = local[i];
+    if (!commitment) continue;
+    const norm = normalizeHex(commitment);
+    if (placed.has(norm)) continue;
+    while (merged.length <= i) merged.push("");
+    if (!merged[i]) {
+      merged[i] = commitment;
+      placed.add(norm);
     }
   }
 
-  return slots.filter(Boolean);
+  while (merged.length > 0 && merged[merged.length - 1] === "") {
+    merged.pop();
+  }
+  return merged;
+}
+
+export function seedCommitmentsFromNotes(
+  commitments: string[],
+  notes: Array<{ leafIndex: number; commitment: string }>,
+  leafCount?: number | null
+): string[] {
+  const size = Math.max(leafCount ?? 0, commitments.length);
+  const merged = [...commitments];
+  while (merged.length < size) merged.push("");
+
+  for (const note of notes) {
+    if (!note.commitment) continue;
+    while (merged.length <= note.leafIndex) merged.push("");
+    if (!merged[note.leafIndex]) {
+      merged[note.leafIndex] = note.commitment;
+    }
+  }
+
+  while (merged.length > 0 && merged[merged.length - 1] === "") {
+    merged.pop();
+  }
+  return merged;
+}
+
+export function findCommitmentLeafIndex(
+  commitments: string[],
+  commitmentHex: string
+): number | null {
+  const target = normalizeHex(commitmentHex);
+  const index = commitments.findIndex(
+    (c) => Boolean(c) && normalizeHex(c) === target
+  );
+  return index >= 0 ? index : null;
+}
+
+/** Ensure slots `0..leafCount-1` are filled for Merkle witness generation. */
+export function denseCommitmentSlots(
+  commitments: string[],
+  leafCount: number
+): string[] {
+  const slots: string[] = [];
+  for (let i = 0; i < leafCount; i++) {
+    slots.push(commitments[i] ?? "");
+  }
+  return slots;
 }
 
 export async function isNullifierSpentOnChain(

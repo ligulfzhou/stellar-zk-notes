@@ -2,27 +2,22 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { Note } from "@/lib/note";
-import {
-  encryptWalletMnemonicWithPin,
-  exportVaultJson,
-  getWalletMnemonic,
-  hasEncryptedMnemonic,
-  importVaultJson,
-  loadVault,
-  resolveWalletMnemonic,
-  setWalletMnemonic,
-  unlockWalletMnemonic,
-} from "@/lib/note-store";
+import { exportVaultJson, importVaultJson, loadVault } from "@/lib/note-store";
+import { hasPasskey } from "@/lib/note-types";
 import {
   noteFromPaymentEnvelope,
   parsePaymentEnvelope,
 } from "@/lib/payment-envelope";
 import { rescanVaultFromChain } from "@/lib/rescan-vault";
+import { formatError } from "@/lib/format-error";
+import { upsertChainCommitment } from "@/lib/vault-events";
 import {
-  deriveShieldedReceiveKeys,
+  deriveShieldedReceiveKeysFromRoot,
   encodeZk1Address,
 } from "@/lib/shielded-keys";
+import { isPlatformAuthenticatorAvailable } from "@/lib/passkey";
 import { persistFullVault, persistVaultState, useWalletStore } from "@/store/useWalletStore";
+import { usePasskeyStore } from "@/store/usePasskeyStore";
 
 function formatStroops(value: bigint): string {
   const whole = value / 10_000_000n;
@@ -32,35 +27,52 @@ function formatStroops(value: bigint): string {
 }
 
 export function NotesPanel() {
-  const { notes, chainCommitments, hasMnemonic, publicKey, refreshNotes } =
-    useWalletStore();
+  const { notes, chainCommitments, publicKey, refreshNotes } = useWalletStore();
+  const {
+    unlocked,
+    unlocking,
+    unlock,
+    registerPrimary,
+    registerRecovery,
+    rootSeed,
+  } = usePasskeyStore();
+
   const fileRef = useRef<HTMLInputElement>(null);
   const paymentRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [importPhrase, setImportPhrase] = useState("");
-  const [showPhraseImport, setShowPhraseImport] = useState(false);
   const [rescanning, setRescanning] = useState(false);
   const [zk1Address, setZk1Address] = useState<string | null>(null);
-  const [pin, setPin] = useState("");
-  const [encryptedOnly, setEncryptedOnly] = useState(false);
+  const [passkeyReady, setPasskeyReady] = useState(false);
+  const [platformOk, setPlatformOk] = useState(true);
 
   useEffect(() => {
     void (async () => {
-      setEncryptedOnly(await hasEncryptedMnemonic());
-      const mnemonic = await getWalletMnemonic();
-      if (mnemonic) {
-        const keys = deriveShieldedReceiveKeys(mnemonic);
+      if (!publicKey) {
+        setPasskeyReady(false);
+        setZk1Address(null);
+        return;
+      }
+      const vault = await loadVault(publicKey);
+      setPasskeyReady(hasPasskey(vault));
+      setPlatformOk(await isPlatformAuthenticatorAvailable());
+
+      if (unlocked && rootSeed) {
+        const keys = deriveShieldedReceiveKeysFromRoot(rootSeed);
         setZk1Address(encodeZk1Address(keys.publicKey));
       } else {
         setZk1Address(null);
       }
     })();
-  }, [hasMnemonic]);
+  }, [publicKey, unlocked, rootSeed, notes.length]);
 
-  async function handleExport(includeMnemonic: boolean) {
+  async function handleExport() {
     setError(null);
-    const json = await exportVaultJson(includeMnemonic);
+    if (!publicKey) {
+      setError("Connect wallet first");
+      return;
+    }
+    const json = await exportVaultJson(publicKey);
     const blob = new Blob([json], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
@@ -68,12 +80,16 @@ export function NotesPanel() {
     anchor.download = `zk-notes-vault-${Date.now()}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
-    setStatus(includeMnemonic ? "Full vault exported (includes phrase)" : "Vault exported");
+    setStatus("Vault exported (no secrets)");
   }
 
   async function handleImportPayment(file: File) {
     setError(null);
     setStatus(null);
+    if (!publicKey) {
+      setError("Connect wallet first");
+      return;
+    }
     try {
       const text = await file.text();
       const envelope = parsePaymentEnvelope(text);
@@ -81,11 +97,15 @@ export function NotesPanel() {
         throw new Error("Payment file is for a different Stellar address");
       }
       const incoming = await noteFromPaymentEnvelope(envelope);
-      const vault = await loadVault();
+      const vault = await loadVault(publicKey);
       const hasCommitment = vault.chainCommitments.includes(envelope.commitment);
       const chain = hasCommitment
         ? vault.chainCommitments
-        : [...vault.chainCommitments, envelope.commitment];
+        : upsertChainCommitment(
+            vault.chainCommitments,
+            envelope.leafIndex,
+            envelope.commitment
+          );
       const already = vault.notes.some((n) => n.commitment === envelope.commitment);
       const updatedNotes = already ? vault.notes : [...vault.notes, incoming];
       await persistVaultState(updatedNotes, chain);
@@ -118,24 +138,27 @@ export function NotesPanel() {
     setError(null);
     setStatus(null);
     if (!publicKey) {
-      setError("Connect Freighter first (needed to read chain state)");
+      setError("Connect wallet first (needed to read chain state)");
       return;
     }
-    const mnemonic =
-      (await resolveWalletMnemonic(pin)) ??
-      (await getWalletMnemonic()) ??
-      importPhrase;
-    if (!mnemonic.trim()) {
-      setError("Import recovery phrase first, then rescan");
-      return;
+
+    let seed = rootSeed;
+    if (!seed) {
+      try {
+        seed = await unlock();
+      } catch {
+        setError("Unlock passkey first to rescan deposits");
+        return;
+      }
     }
+
     setRescanning(true);
     setStatus("Scanning vault events on-chain…");
     try {
-      const existing = await loadVault();
+      const existing = await loadVault(publicKey);
       const result = await rescanVaultFromChain({
-        mnemonic,
         ownerPubkey: publicKey,
+        rootSeed: seed,
         existingVault: existing,
         onProgress: (msg) => setStatus(msg),
       });
@@ -146,43 +169,41 @@ export function NotesPanel() {
           `${result.vault.chainCommitments.length} commitments, ` +
           `${result.eventsParsed} events` +
           (result.depositsSkipped
-            ? ` (${result.depositsSkipped} deposit(s) need payment file / legacy JSON)`
+            ? ` (${result.depositsSkipped} need payment file)`
             : "")
       );
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Rescan failed");
+      setError(formatError(err) || "Rescan failed");
       setStatus(null);
     } finally {
       setRescanning(false);
     }
   }
 
-  async function handleEncryptPin() {
+  async function handleCreatePasskey() {
     setError(null);
     try {
-      await encryptWalletMnemonicWithPin(pin);
-      setPin("");
-      setEncryptedOnly(true);
-      setZk1Address(null);
+      await registerPrimary("Primary passkey");
+      setPasskeyReady(true);
+      const keys = deriveShieldedReceiveKeysFromRoot(
+        usePasskeyStore.getState().requireSeed()
+      );
+      setZk1Address(encodeZk1Address(keys.publicKey));
       await refreshNotes();
-      setStatus("Recovery phrase encrypted with PIN");
+      setStatus("Passkey created — shielded wallet ready");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Encrypt failed");
+      setError(err instanceof Error ? err.message : "Passkey setup failed");
     }
   }
 
-  async function handleUnlockPin() {
+  async function handleAddRecovery() {
     setError(null);
     try {
-      const mnemonic = await unlockWalletMnemonic(pin);
-      const keys = deriveShieldedReceiveKeys(mnemonic);
-      setZk1Address(encodeZk1Address(keys.publicKey));
-      setEncryptedOnly(false);
-      setPin("");
-      await refreshNotes();
-      setStatus("Recovery phrase unlocked for this session");
+      if (!unlocked) await unlock();
+      await registerRecovery("Recovery passkey");
+      setStatus("Recovery passkey added — can unwrap wallet on another device");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Unlock failed");
+      setError(err instanceof Error ? err.message : "Recovery passkey failed");
     }
   }
 
@@ -192,41 +213,27 @@ export function NotesPanel() {
     setStatus("zk1 address copied");
   }
 
-  async function handleImportPhrase() {
-    setError(null);
-    try {
-      await setWalletMnemonic(importPhrase);
-      const mnemonic = (await getWalletMnemonic())!;
-      setImportPhrase("");
-      setShowPhraseImport(false);
-      const keys = deriveShieldedReceiveKeys(mnemonic);
-      setZk1Address(encodeZk1Address(keys.publicKey));
-      setEncryptedOnly(false);
-      await refreshNotes();
-      setStatus("Recovery phrase imported");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Invalid phrase");
-    }
-  }
-
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
-      <div className="mb-6 rounded-xl border border-violet-500/20 bg-violet-500/5 p-4">
-        <h3 className="text-sm font-medium text-violet-200">Recovery phrase</h3>
+      <div className="mb-6 rounded-xl border border-sky-500/20 bg-sky-500/5 p-4">
+        <h3 className="text-sm font-medium text-sky-200">Passkey wallet</h3>
         <p className="mt-1 text-xs text-zinc-400">
-          12 words derive deposit secrets. On a new browser: import phrase →{" "}
-          <strong className="font-normal text-zinc-300">Rescan from chain</strong> rebuilds
-          your deposits and <code className="text-zinc-300">chainCommitments</code>. Payment
-          files still needed for notes others sent you.
+          Root key lives in your authenticator (PRF). Unlock with biometrics to spend.
+          On a new device: same synced passkey, or use a recovery passkey.
         </p>
         <p className="mt-2 text-sm text-zinc-300">
           Status:{" "}
-          {encryptedOnly
-            ? "🔒 PIN-encrypted"
-            : hasMnemonic
-              ? "✓ active"
-              : "not set — created on first deposit"}
+          {!passkeyReady
+            ? "not set — create before first deposit"
+            : unlocked
+              ? "🔓 unlocked"
+              : "🔒 locked"}
         </p>
+        {!platformOk ? (
+          <p className="mt-1 text-xs text-amber-300">
+            Platform authenticator not detected. Use Safari 17+ or Chrome 118+ on macOS/iOS.
+          </p>
+        ) : null}
 
         {zk1Address ? (
           <div className="mt-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
@@ -240,72 +247,48 @@ export function NotesPanel() {
               Copy zk1
             </button>
           </div>
-        ) : encryptedOnly ? (
-          <p className="mt-2 text-xs text-amber-200">Unlock with PIN to show zk1 address</p>
         ) : null}
 
-        <div className="mt-3 flex flex-wrap items-end gap-2">
-          <input
-            type="password"
-            value={pin}
-            onChange={(e) => setPin(e.target.value)}
-            placeholder="PIN (optional)"
-            className="rounded-lg border border-white/10 bg-black/30 px-3 py-1.5 text-sm"
-          />
-          {encryptedOnly ? (
-            <button
-              type="button"
-              onClick={() => void handleUnlockPin()}
-              className="rounded-lg border border-amber-500/30 px-3 py-1.5 text-sm text-amber-200 hover:bg-amber-500/10"
-            >
-              Unlock
-            </button>
-          ) : hasMnemonic ? (
-            <button
-              type="button"
-              onClick={() => void handleEncryptPin()}
-              className="rounded-lg border border-amber-500/30 px-3 py-1.5 text-sm text-amber-200 hover:bg-amber-500/10"
-            >
-              Encrypt with PIN
-            </button>
-          ) : null}
-        </div>
-
         <div className="mt-3 flex flex-wrap gap-2">
-          <button
-            type="button"
-            onClick={() => setShowPhraseImport((v) => !v)}
-            className="rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/10"
-          >
-            Import phrase
-          </button>
+          {!passkeyReady ? (
+            <button
+              type="button"
+              onClick={() => void handleCreatePasskey()}
+              disabled={unlocking}
+              className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500 disabled:opacity-50"
+            >
+              Create passkey
+            </button>
+          ) : (
+            <>
+              {!unlocked ? (
+                <button
+                  type="button"
+                  onClick={() => void unlock()}
+                  disabled={unlocking}
+                  className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500 disabled:opacity-50"
+                >
+                  {unlocking ? "Waiting…" : "Unlock"}
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => void handleAddRecovery()}
+                className="rounded-lg border border-sky-500/30 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-500/10"
+              >
+                Add recovery passkey
+              </button>
+            </>
+          )}
           <button
             type="button"
             onClick={() => void handleRescan()}
             disabled={rescanning}
-            className="rounded-lg border border-sky-500/30 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-500/10 disabled:opacity-50"
+            className="rounded-lg border border-violet-500/30 px-3 py-1.5 text-sm text-violet-200 hover:bg-violet-500/10 disabled:opacity-50"
           >
             {rescanning ? "Scanning…" : "Rescan from chain"}
           </button>
         </div>
-        {showPhraseImport ? (
-          <div className="mt-3">
-            <textarea
-              value={importPhrase}
-              onChange={(e) => setImportPhrase(e.target.value)}
-              placeholder="twelve words separated by spaces…"
-              rows={2}
-              className="w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm"
-            />
-            <button
-              type="button"
-              onClick={() => void handleImportPhrase()}
-              className="mt-2 rounded-lg bg-violet-600 px-3 py-1.5 text-sm text-white hover:bg-violet-500"
-            >
-              Save phrase
-            </button>
-          </div>
-        ) : null}
       </div>
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
@@ -313,17 +296,10 @@ export function NotesPanel() {
         <div className="flex flex-wrap gap-2">
           <button
             type="button"
-            onClick={() => void handleExport(false)}
+            onClick={() => void handleExport()}
             className="rounded-lg border border-white/15 px-3 py-1.5 text-sm hover:bg-white/10"
           >
             Export JSON
-          </button>
-          <button
-            type="button"
-            onClick={() => void handleExport(true)}
-            className="rounded-lg border border-amber-500/30 px-3 py-1.5 text-sm text-amber-200 hover:bg-amber-500/10"
-          >
-            Export + phrase
           </button>
           <button
             type="button"
@@ -365,7 +341,9 @@ export function NotesPanel() {
       </div>
 
       <p className="mb-4 text-xs text-zinc-500">
-        {notes.length} notes · {chainCommitments.length} on-chain commitments tracked locally
+        {publicKey
+          ? `${notes.length} notes for ${publicKey.slice(0, 6)}…${publicKey.slice(-6)} · ${chainCommitments.length} commitments`
+          : "Connect wallet to view account notes"}
       </p>
 
       {notes.length === 0 ? (
@@ -393,8 +371,8 @@ function NoteRow({
 }) {
   const deriveLabel =
     note.derivationIndex !== undefined
-      ? `derive #${note.derivationIndex}`
-      : "payment / legacy";
+      ? `passkey #${note.derivationIndex}`
+      : "payment import";
 
   return (
     <li className="rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm">

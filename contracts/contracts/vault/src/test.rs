@@ -1,7 +1,8 @@
 #![cfg(test)]
 
 use super::*;
-use soroban_sdk::{contract, contractimpl, testutils::Address as _, token, Address, Bytes, BytesN, Env};
+use merkle::MerkleTree;
+use soroban_sdk::{contract, contractimpl, crypto::bn254::Bn254Fr, testutils::Address as _, token, Address, Bytes, BytesN, Env, U256};
 
 #[contract]
 struct MockVerifier;
@@ -83,4 +84,25 @@ fn shielded_send_records_nullifier_and_new_commitment() {
 
     assert!(client.is_spent(&nullifier));
     assert_eq!(client.leaf_count(), 2);
+}
+
+#[test]
+fn hash_pair_matches_noir_fixture() {
+    let env = Env::default();
+    use soroban_poseidon::poseidon2_hash;
+    let left = Bn254Fr::from_u256(U256::from_u32(&env, 1));
+    let right = Bn254Fr::from_u256(U256::from_u32(&env, 2));
+    let inputs = soroban_sdk::vec![&env, left.to_u256(), right.to_u256()];
+    let hash_t4 = Bn254Fr::from_u256(poseidon2_hash::<4, Bn254Fr>(&env, &inputs));
+    let contract = merkle::hash_pair(&env, &left, &right);
+    let expected = BytesN::from_array(
+        &env,
+        &[
+            0x03, 0x86, 0x82, 0xaa, 0x1c, 0xb5, 0xae, 0x4e, 0x0a, 0x3f, 0x13, 0xda, 0x43, 0x2a,
+            0x95, 0xc7, 0x7c, 0x5c, 0x11, 0x1f, 0x6f, 0x03, 0x0f, 0xaf, 0x9c, 0xad, 0x64, 0x1c,
+            0xe1, 0xed, 0x73, 0x83,
+        ],
+    );
+    assert_eq!(hash_t4.to_bytes(), expected);
+    assert_eq!(contract.to_bytes(), expected);
 }

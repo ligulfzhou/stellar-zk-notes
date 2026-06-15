@@ -4,7 +4,7 @@ mod merkle;
 mod storage;
 mod verifier;
 
-use merkle::MerkleTree;
+use merkle::{MerkleTree, TREE_HEIGHT};
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, crypto::bn254::Bn254Fr, token, Address,
     Bytes, BytesN, Env,
@@ -77,6 +77,9 @@ impl Vault {
         let mut tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
         let leaf = Bn254Fr::from_bytes(commitment.clone());
         let leaf_index = tree.insert(&env, leaf);
+        env.storage()
+            .persistent()
+            .set(&DataKey::LeafCommitment(leaf_index), &commitment);
         env.storage().instance().set(&DataKey::MerkleTree, &tree);
 
         DepositEvent {
@@ -169,6 +172,25 @@ impl Vault {
         tree.leaf_count
     }
 
+    /// Level-0 filled node — equals leaf 0 commitment when `leaf_count >= 1`.
+    pub fn get_filled_at_level(env: Env, level: u32) -> BytesN<32> {
+        assert!(level < TREE_HEIGHT, "level out of range");
+        let tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
+        tree.filled.get(level).unwrap()
+    }
+
+    pub fn get_zero_at_level(env: Env, level: u32) -> BytesN<32> {
+        assert!(level < TREE_HEIGHT, "level out of range");
+        let tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
+        tree.zeros.get(level).unwrap()
+    }
+
+    pub fn get_commitment_at(env: Env, leaf_index: u32) -> Option<BytesN<32>> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::LeafCommitment(leaf_index))
+    }
+
     pub fn is_spent(env: Env, nullifier: BytesN<32>) -> bool {
         env.storage()
             .persistent()
@@ -206,6 +228,9 @@ impl Vault {
             let mut tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
             let leaf = Bn254Fr::from_bytes(new_commitment.clone());
             let leaf_index = tree.insert(env, leaf);
+            env.storage()
+                .persistent()
+                .set(&DataKey::LeafCommitment(leaf_index), &new_commitment);
             env.storage().instance().set(&DataKey::MerkleTree, &tree);
             Some(leaf_index)
         } else if mode == MODE_WITHDRAW {

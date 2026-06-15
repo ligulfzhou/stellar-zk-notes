@@ -8,4 +8,5 @@ pub enum DataKey {
     MerkleTree,
     Nullifier(BytesN<32>),
     Verifier,
+    LeafCommitment(u32),
 }

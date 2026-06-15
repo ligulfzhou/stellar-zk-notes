@@ -1,178 +1,193 @@
-import { get, set } from "idb-keyval";
+import { del, get, set } from "idb-keyval";
 import type { Note, StoredNoteVault } from "./note";
-import { defaultVault } from "./note-types";
-import {
-  deriveNoteSecrets,
-  generateWalletMnemonic,
-  isValidMnemonic,
-  normalizeMnemonic,
-} from "./mnemonic";
-import {
-  decryptMnemonic,
-  encryptMnemonic,
-  type EncryptedMnemonic,
-} from "./mnemonic-crypto";
+import { defaultVault, hasPasskey } from "./note-types";
+import type { PasskeyVaultConfig } from "./passkey";
+import { deriveNoteSecretsFromSeed } from "./root-seed";
+import { usePasskeyStore } from "@/store/usePasskeyStore";
 
-const VAULT_KEY = "zk-notes:vault";
+const LEGACY_VAULT_KEY = "zk-notes:vault";
+const PASSKEY_KEY = "zk-notes:passkey";
+const MIGRATED_FLAG = "zk-notes:per-account-migrated";
 
-type LegacyVaultV1 = {
-  version?: 1;
+function vaultKeyFor(pubkey: string): string {
+  return `zk-notes:vault:${pubkey}`;
+}
+
+type LegacyVault = {
+  version?: number;
+  mnemonic?: string | null;
+  encryptedMnemonic?: unknown;
+  legacyMnemonic?: string | null;
+  passkey?: PasskeyVaultConfig | null;
+  nextDerivationIndex?: number;
   notes?: Note[];
   chainCommitments?: string[];
 };
 
-function migrateVault(raw: LegacyVaultV1 | StoredNoteVault | undefined): StoredNoteVault {
+function migrateVault(raw: LegacyVault | StoredNoteVault | undefined): StoredNoteVault {
   if (!raw) return defaultVault();
-  if (raw.version === 2) {
-    return {
-      version: 2,
-      mnemonic: raw.mnemonic ?? null,
-      encryptedMnemonic: raw.encryptedMnemonic ?? null,
-      nextDerivationIndex: raw.nextDerivationIndex ?? raw.notes.length,
-      notes: raw.notes,
-      chainCommitments: raw.chainCommitments ?? [],
-    };
+  if (raw.version === 3 && "passkey" in raw) {
+    return raw as StoredNoteVault;
   }
-  const notes = raw.notes ?? [];
+  const notes = (raw.notes ?? []).map((n) => {
+    const { keySource: _ks, ...note } = n as Note & { keySource?: string };
+    return note;
+  });
   return {
-    version: 2,
-    mnemonic: null,
-    nextDerivationIndex: notes.length,
+    version: 3,
+    passkey: raw.passkey ?? null,
+    nextDerivationIndex: raw.nextDerivationIndex ?? notes.length,
     notes,
     chainCommitments: raw.chainCommitments ?? [],
   };
 }
 
-export async function loadVault(): Promise<StoredNoteVault> {
-  const vault = await get<LegacyVaultV1 | StoredNoteVault>(VAULT_KEY);
-  return migrateVault(vault);
+async function loadGlobalPasskey(): Promise<PasskeyVaultConfig | null> {
+  return (await get<PasskeyVaultConfig | null>(PASSKEY_KEY)) ?? null;
 }
 
-export async function loadNotes(): Promise<Note[]> {
-  return (await loadVault()).notes;
+async function saveGlobalPasskey(config: PasskeyVaultConfig | null): Promise<void> {
+  if (config) {
+    await set(PASSKEY_KEY, config);
+  } else {
+    await del(PASSKEY_KEY);
+  }
 }
 
-export async function loadChainCommitments(): Promise<string[]> {
-  return (await loadVault()).chainCommitments;
+function withGlobalPasskey(vault: StoredNoteVault, passkey: PasskeyVaultConfig | null): StoredNoteVault {
+  return { ...vault, passkey: passkey ?? vault.passkey };
 }
 
-export async function saveVault(vault: StoredNoteVault): Promise<void> {
-  await set(VAULT_KEY, vault);
+async function migrateLegacyVaultIfNeeded(): Promise<void> {
+  if (await get<boolean>(MIGRATED_FLAG)) return;
+
+  const legacy = await get<LegacyVault | StoredNoteVault>(LEGACY_VAULT_KEY);
+  if (!legacy) {
+    await set(MIGRATED_FLAG, true);
+    return;
+  }
+
+  const vault = migrateVault(legacy);
+  const passkey = vault.passkey;
+  if (passkey) await saveGlobalPasskey(passkey);
+
+  const byOwner = new Map<string, Note[]>();
+  for (const note of vault.notes) {
+    const owner = note.ownerPubkey;
+    const list = byOwner.get(owner) ?? [];
+    list.push(note);
+    byOwner.set(owner, list);
+  }
+
+  for (const [pubkey, notes] of byOwner) {
+    const maxDerivation = notes.reduce(
+      (max, note) =>
+        note.derivationIndex !== undefined
+          ? Math.max(max, note.derivationIndex)
+          : max,
+      -1
+    );
+    const accountVault: StoredNoteVault = {
+      version: 3,
+      passkey,
+      nextDerivationIndex: Math.max(
+        vault.nextDerivationIndex,
+        maxDerivation + 1,
+        notes.length
+      ),
+      notes,
+      chainCommitments: [...vault.chainCommitments],
+    };
+    await set(vaultKeyFor(pubkey), accountVault);
+  }
+
+  await del(LEGACY_VAULT_KEY);
+  await set(MIGRATED_FLAG, true);
 }
 
-export async function saveNotes(notes: Note[]): Promise<void> {
-  const vault = await loadVault();
+/** Load vault for the active Stellar account (notes are per G… address). */
+export async function loadVault(
+  activePubkey?: string | null
+): Promise<StoredNoteVault> {
+  await migrateLegacyVaultIfNeeded();
+  const passkey = await loadGlobalPasskey();
+
+  if (!activePubkey) {
+    return withGlobalPasskey(defaultVault(), passkey);
+  }
+
+  const raw = await get<LegacyVault | StoredNoteVault>(vaultKeyFor(activePubkey));
+  return withGlobalPasskey(migrateVault(raw), passkey);
+}
+
+export async function loadNotes(activePubkey: string): Promise<Note[]> {
+  return (await loadVault(activePubkey)).notes;
+}
+
+export async function loadChainCommitments(activePubkey: string): Promise<string[]> {
+  return (await loadVault(activePubkey)).chainCommitments;
+}
+
+export async function saveVault(
+  vault: StoredNoteVault,
+  activePubkey: string
+): Promise<void> {
+  if (vault.passkey) {
+    await saveGlobalPasskey(vault.passkey);
+  }
+  await set(vaultKeyFor(activePubkey), vault);
+}
+
+export async function saveNotes(notes: Note[], activePubkey: string): Promise<void> {
+  const vault = await loadVault(activePubkey);
   vault.notes = notes;
-  await saveVault(vault);
+  await saveVault(vault, activePubkey);
 }
 
-export async function getWalletMnemonic(): Promise<string | null> {
-  const vault = await loadVault();
-  return vault.mnemonic;
-}
-
-export async function hasEncryptedMnemonic(): Promise<boolean> {
-  const vault = await loadVault();
-  return Boolean(vault.encryptedMnemonic && !vault.mnemonic);
-}
-
-/** Resolve mnemonic from plain storage or PIN-decrypted vault. */
-export async function resolveWalletMnemonic(pin?: string): Promise<string | null> {
-  const vault = await loadVault();
-  if (vault.mnemonic) return vault.mnemonic;
-  if (!vault.encryptedMnemonic) return null;
-  if (!pin) return null;
-  return decryptMnemonic(vault.encryptedMnemonic, pin);
-}
-
-export async function setWalletMnemonic(mnemonic: string): Promise<void> {
-  const normalized = normalizeMnemonic(mnemonic);
-  if (!isValidMnemonic(normalized)) {
-    throw new Error("Invalid recovery phrase");
+export async function savePasskeyConfig(
+  config: PasskeyVaultConfig,
+  activePubkey?: string | null
+): Promise<void> {
+  await saveGlobalPasskey(config);
+  if (activePubkey) {
+    const vault = await loadVault(activePubkey);
+    vault.passkey = config;
+    await saveVault(vault, activePubkey);
   }
-  const vault = await loadVault();
-  vault.mnemonic = normalized;
-  vault.encryptedMnemonic = null;
-  await saveVault(vault);
 }
 
-export async function encryptWalletMnemonicWithPin(pin: string): Promise<void> {
-  const vault = await loadVault();
-  const phrase = vault.mnemonic;
-  if (!phrase) {
-    throw new Error("No recovery phrase to encrypt");
-  }
-  if (pin.length < 4) {
-    throw new Error("PIN must be at least 4 characters");
-  }
-  vault.encryptedMnemonic = await encryptMnemonic(phrase, pin);
-  vault.mnemonic = null;
-  await saveVault(vault);
-}
-
-export async function unlockWalletMnemonic(pin: string): Promise<string> {
-  const vault = await loadVault();
-  if (vault.mnemonic) return vault.mnemonic;
-  if (!vault.encryptedMnemonic) {
-    throw new Error("No encrypted recovery phrase");
-  }
-  const phrase = await decryptMnemonic(vault.encryptedMnemonic, pin);
-  vault.mnemonic = phrase;
-  await saveVault(vault);
-  return phrase;
-}
-
-export async function ensureWalletMnemonic(): Promise<{
-  mnemonic: string;
-  isNew: boolean;
-}> {
-  const vault = await loadVault();
-  if (vault.mnemonic) {
-    return { mnemonic: vault.mnemonic, isNew: false };
-  }
-  if (vault.encryptedMnemonic) {
-    throw new Error("Recovery phrase is PIN-locked — unlock in Notes first");
-  }
-  const mnemonic = generateWalletMnemonic();
-  vault.mnemonic = mnemonic;
-  await saveVault(vault);
-  return { mnemonic, isNew: true };
-}
-
-/** Reserve and return the next derivation index (persisted). */
-export async function allocateDerivationIndex(): Promise<number> {
-  const vault = await loadVault();
+export async function allocateDerivationIndex(activePubkey: string): Promise<number> {
+  const vault = await loadVault(activePubkey);
   const index = vault.nextDerivationIndex;
   vault.nextDerivationIndex = index + 1;
-  await saveVault(vault);
+  await saveVault(vault, activePubkey);
   return index;
 }
 
-export async function deriveAndAllocateNoteSecrets(): Promise<{
+export async function deriveAndAllocateNoteSecrets(activePubkey: string): Promise<{
   secret: string;
   nullifierSecret: string;
   derivationIndex: number;
-  mnemonic: string;
-  mnemonicIsNew: boolean;
 }> {
-  const { mnemonic, isNew } = await ensureWalletMnemonic();
-  const derivationIndex = await allocateDerivationIndex();
-  const { secret, nullifierSecret } = deriveNoteSecrets(mnemonic, derivationIndex);
-  return {
-    secret,
-    nullifierSecret,
-    derivationIndex,
-    mnemonic,
-    mnemonicIsNew: isNew,
-  };
+  const vault = await loadVault(activePubkey);
+  if (!hasPasskey(vault)) {
+    throw new Error("Register a passkey first (Notes → Create passkey)");
+  }
+
+  const rootSeed = usePasskeyStore.getState().requireSeed();
+  const derivationIndex = await allocateDerivationIndex(activePubkey);
+  const { secret, nullifierSecret } = deriveNoteSecretsFromSeed(
+    rootSeed,
+    derivationIndex
+  );
+  return { secret, nullifierSecret, derivationIndex };
 }
 
 type SerializedNote = Omit<Note, "value"> & { value: string };
 
 type SerializedVault = {
-  version: 2;
-  mnemonic?: string | null;
-  encryptedMnemonic?: EncryptedMnemonic | null;
+  version: 3;
+  passkey?: PasskeyVaultConfig | null;
   nextDerivationIndex?: number;
   notes: SerializedNote[];
   chainCommitments: string[];
@@ -180,9 +195,8 @@ type SerializedVault = {
 
 function serializeVault(vault: StoredNoteVault): SerializedVault {
   return {
-    version: 2,
-    mnemonic: vault.mnemonic,
-    encryptedMnemonic: vault.encryptedMnemonic,
+    version: 3,
+    passkey: vault.passkey,
     nextDerivationIndex: vault.nextDerivationIndex,
     notes: vault.notes.map((n) => ({ ...n, value: n.value.toString() })),
     chainCommitments: vault.chainCommitments,
@@ -190,38 +204,39 @@ function serializeVault(vault: StoredNoteVault): SerializedVault {
 }
 
 function deserializeVault(data: SerializedVault): StoredNoteVault {
-  if (data.version !== 2) {
-    throw new Error("Unsupported vault version — import v2 JSON only");
+  if (data.version !== 3) {
+    throw new Error("Unsupported vault version — import v3 JSON only");
   }
   return migrateVault({
-    version: 2,
-    mnemonic: data.mnemonic ?? null,
-    encryptedMnemonic: data.encryptedMnemonic ?? null,
+    version: 3,
+    passkey: data.passkey ?? null,
     nextDerivationIndex: data.nextDerivationIndex ?? data.notes.length,
     notes: data.notes.map((n) => ({ ...n, value: BigInt(n.value) })),
     chainCommitments: data.chainCommitments ?? [],
   });
 }
 
-/** Export notes + chain state. Mnemonic is omitted by default for safety. */
-export async function exportVaultJson(includeMnemonic = false): Promise<string> {
-  const vault = await loadVault();
+export async function exportVaultJson(activePubkey: string): Promise<string> {
+  const vault = await loadVault(activePubkey);
   const payload = serializeVault(vault);
-  if (!includeMnemonic) {
-    delete payload.mnemonic;
+  if (payload.passkey) {
+    payload.passkey = { ...payload.passkey, recoveryWraps: [] };
   }
   return JSON.stringify(payload, null, 2);
 }
 
 export function importVaultJson(json: string): StoredNoteVault {
-  const parsed = JSON.parse(json) as SerializedVault | LegacyVaultV1;
-  if ("version" in parsed && parsed.version === 2) {
+  const parsed = JSON.parse(json) as SerializedVault | LegacyVault;
+  if ("version" in parsed && parsed.version === 3) {
     return deserializeVault(parsed as SerializedVault);
   }
-  return migrateVault(parsed);
+  return migrateVault(parsed as LegacyVault);
 }
 
-/** @deprecated Use exportVaultJson */
-export async function exportNotesJson(): Promise<string> {
-  return exportVaultJson();
+export async function exportNotesJson(activePubkey: string): Promise<string> {
+  return exportVaultJson(activePubkey);
+}
+
+export async function getPasskeyConfig(): Promise<PasskeyVaultConfig | null> {
+  return loadGlobalPasskey();
 }

@@ -2,11 +2,9 @@
 
 import { create } from "zustand";
 import type { Note, StoredNoteVault } from "@/lib/note";
-import { sumUnspentNotes } from "@/lib/note";
+import { sumUnspentNotes, hasPasskey } from "@/lib/note";
 import { loadVault, saveVault } from "@/lib/note-store";
-import { scanIncomingEncryptedNotes } from "@/lib/incoming-scanner";
-import { rescanVaultFromChain } from "@/lib/rescan-vault";
-import { connectFreighter, getPublicKey } from "@/lib/wallet";
+import { connectWallet, getPublicKey } from "@/lib/wallet";
 
 type Tab = "dashboard" | "deposit" | "send" | "withdraw" | "notes";
 
@@ -16,46 +14,70 @@ interface WalletState {
   error: string | null;
   notes: Note[];
   chainCommitments: string[];
-  hasMnemonic: boolean;
+  hasPasskey: boolean;
   activeTab: Tab;
   shieldedBalance: bigint;
   setTab: (tab: Tab) => void;
   refreshNotes: () => Promise<void>;
   connect: () => Promise<void>;
   hydrate: () => Promise<void>;
+  onAccountChange: (publicKey: string | null) => Promise<void>;
 }
 
 function vaultToState(vault: StoredNoteVault) {
   return {
     notes: vault.notes,
     chainCommitments: vault.chainCommitments,
-    hasMnemonic: Boolean(vault.mnemonic || vault.encryptedMnemonic),
+    hasPasskey: hasPasskey(vault),
     shieldedBalance: sumUnspentNotes(vault.notes),
   };
 }
 
-export const useWalletStore = create<WalletState>((set) => ({
+const emptyAccountState = {
+  notes: [] as Note[],
+  chainCommitments: [] as string[],
+  hasPasskey: false,
+  shieldedBalance: BigInt(0),
+};
+
+export const useWalletStore = create<WalletState>((set, get) => ({
   publicKey: null,
   connecting: false,
   error: null,
   notes: [],
   chainCommitments: [],
-  hasMnemonic: false,
+  hasPasskey: false,
   activeTab: "dashboard",
   shieldedBalance: BigInt(0),
 
   setTab: (tab) => set({ activeTab: tab }),
 
   refreshNotes: async () => {
-    const vault = await loadVault();
+    const { publicKey } = get();
+    if (!publicKey) {
+      set(emptyAccountState);
+      return;
+    }
+    const vault = await loadVault(publicKey);
+    set(vaultToState(vault));
+  },
+
+  onAccountChange: async (publicKey) => {
+    set({ publicKey });
+    if (!publicKey) {
+      set(emptyAccountState);
+      return;
+    }
+    const vault = await loadVault(publicKey);
     set(vaultToState(vault));
   },
 
   connect: async () => {
     set({ connecting: true, error: null });
     try {
-      const publicKey = await connectFreighter();
-      set({ publicKey, connecting: false });
+      const publicKey = await connectWallet();
+      await get().onAccountChange(publicKey);
+      set({ connecting: false });
     } catch (err) {
       set({
         connecting: false,
@@ -65,56 +87,38 @@ export const useWalletStore = create<WalletState>((set) => ({
   },
 
   hydrate: async () => {
-    const [publicKey, vault] = await Promise.all([getPublicKey(), loadVault()]);
-    set({ publicKey, ...vaultToState(vault) });
-
-    const mnemonic = vault.mnemonic;
-    const shouldAutoSync =
-      publicKey &&
-      mnemonic &&
-      vault.notes.length === 0 &&
-      typeof sessionStorage !== "undefined" &&
-      !sessionStorage.getItem("zk-notes:auto-synced");
-
-    if (shouldAutoSync) {
-      sessionStorage.setItem("zk-notes:auto-synced", "1");
-      try {
-        const rescan = await rescanVaultFromChain({
-          mnemonic,
-          ownerPubkey: publicKey,
-          existingVault: vault,
-        });
-        const incoming = await scanIncomingEncryptedNotes({
-          mnemonic,
-          ownerPubkey: publicKey,
-          vault: rescan.vault,
-        });
-        const merged = {
-          ...rescan.vault,
-          notes: incoming.notes,
-          chainCommitments: incoming.chainCommitments,
-        };
-        await saveVault(merged);
-        set({ ...vaultToState(merged) });
-      } catch {
-        // RPC unavailable — user can rescan manually
-      }
+    const publicKey = await getPublicKey();
+    if (!publicKey) {
+      set({ publicKey: null, ...emptyAccountState });
+      return;
     }
+    const vault = await loadVault(publicKey);
+    set({ publicKey, ...vaultToState(vault) });
   },
 }));
+
+function requireActivePubkey(): string {
+  const publicKey = useWalletStore.getState().publicKey;
+  if (!publicKey) {
+    throw new Error("Connect wallet first");
+  }
+  return publicKey;
+}
 
 export async function persistVaultState(
   notes: Note[],
   chainCommitments: string[]
 ) {
-  const vault = await loadVault();
+  const publicKey = requireActivePubkey();
+  const vault = await loadVault(publicKey);
   vault.notes = notes;
   vault.chainCommitments = chainCommitments;
-  await saveVault(vault);
+  await saveVault(vault, publicKey);
   useWalletStore.setState(vaultToState(vault));
 }
 
 export async function persistFullVault(vault: StoredNoteVault) {
-  await saveVault(vault);
+  const publicKey = requireActivePubkey();
+  await saveVault(vault, publicKey);
   useWalletStore.setState(vaultToState(vault));
 }

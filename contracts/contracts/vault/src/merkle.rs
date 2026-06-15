@@ -16,7 +16,7 @@ fn fr_to_bytes(fr: &Bn254Fr) -> BytesN<32> {
 /// Hash two BN254 field elements with Poseidon2 (matches Noir `Poseidon2::hash([a,b], 2)`).
 pub fn hash_pair(env: &Env, left: &Bn254Fr, right: &Bn254Fr) -> Bn254Fr {
     let inputs = vec![env, left.to_u256(), right.to_u256()];
-    let hash = poseidon2_hash::<3, Bn254Fr>(env, &inputs);
+    let hash = poseidon2_hash::<4, Bn254Fr>(env, &inputs);
     Bn254Fr::from_u256(hash)
 }
 

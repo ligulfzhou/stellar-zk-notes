@@ -1,32 +1,27 @@
+import type { PasskeyVaultConfig } from "./passkey";
+
 export type NoteStatus = "unspent" | "spent";
 
 export interface Note {
   id: string;
   value: bigint;
-  /** Legacy random secret; kept for notes created before mnemonic derivation. */
+  /** Random secret for payment-imported notes; derived notes recompute from passkey. */
   secret: string;
-  /** Legacy random secret; kept for notes created before mnemonic derivation. */
   nullifierSecret: string;
-  /** When set, secrets are re-derived from wallet mnemonic + this index. */
+  /** When set, secrets are re-derived from passkey root + this index. */
   derivationIndex?: number;
   ownerPubkey: string;
   commitment: string;
-  /** Index in the on-chain Merkle tree at deposit time. */
   leafIndex: number;
   status: NoteStatus;
   createdAt: number;
 }
 
 export interface StoredNoteVault {
-  version: 2;
-  /** BIP39 phrase stored locally (demo). Import on a new device to recover derived notes. */
-  mnemonic: string | null;
-  /** Optional PIN-encrypted mnemonic (preferred when set). */
-  encryptedMnemonic?: import("./mnemonic-crypto").EncryptedMnemonic | null;
-  /** Next free index for deriveNoteSecrets(mnemonic, index). */
+  version: 3;
+  passkey: PasskeyVaultConfig | null;
   nextDerivationIndex: number;
   notes: Note[];
-  /** Commitments in on-chain insertion order (single-user demo assumption). */
   chainCommitments: string[];
 }
 
@@ -42,10 +37,14 @@ export function sumUnspentNotes(notes: Note[]): bigint {
 
 export function defaultVault(): StoredNoteVault {
   return {
-    version: 2,
-    mnemonic: null,
+    version: 3,
+    passkey: null,
     nextDerivationIndex: 0,
     notes: [],
     chainCommitments: [],
   };
+}
+
+export function hasPasskey(vault: StoredNoteVault): boolean {
+  return Boolean(vault.passkey?.credentials.length);
 }
