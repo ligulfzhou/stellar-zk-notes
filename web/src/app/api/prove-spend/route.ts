@@ -74,6 +74,7 @@ function onChainRootBigInt(hex: string): bigint {
 
 export async function POST(request: Request) {
   const body = (await request.json()) as ProveRequest;
+  const mockProof = process.env.ZK_MOCK_PROOF === "true";
 
   try {
     const spendCommitmentHex = await computeCommitmentHex(
@@ -182,13 +183,9 @@ export async function POST(request: Request) {
       const expected = normalizeHex(body.onChainMerkleRoot);
       const actual =
         "0x" + root.toString(16).padStart(64, "0").toLowerCase();
-      const mockProof = process.env.ZK_MOCK_PROOF === "true";
-      const useTreeState = hasGaps && body.treeState;
-
       if (expected !== actual) {
-        // Deployed vault uses poseidon2 t=3; Noir witness uses t=4. For mock
-        // spends, trust the on-chain root read from the vault contract.
-        if (mockProof && useTreeState) {
+        // Deployed vault uses poseidon2 t=3; Noir witness uses t=4.
+        if (mockProof) {
           root = onChainRootBigInt(body.onChainMerkleRoot);
         } else {
           return NextResponse.json(
@@ -253,7 +250,11 @@ export async function POST(request: Request) {
     const witnessPath = path.join(tmpDir, "witness.json");
     try {
       await writeFile(witnessPath, JSON.stringify(witnessPayload));
-      await execFileAsync(witnessScript, [witnessPath]);
+      // Demo mode: mock verifier accepts any proof; skip nargo execute when the
+      // deployed vault Merkle hash (poseidon2 t=3) differs from the Noir circuit (t=4).
+      if (!mockProof) {
+        await execFileAsync(witnessScript, [witnessPath]);
+      }
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
@@ -261,7 +262,7 @@ export async function POST(request: Request) {
     const artifactsDir = path.join(process.cwd(), "..", "artifacts", "spend_note");
     let proofHex: string | null = null;
 
-    if (process.env.ZK_MOCK_PROOF === "true") {
+    if (mockProof) {
       proofHex = "0x" + "ab".repeat(32);
     } else if (await hasBarretenberg()) {
       await execFileAsync(path.join(process.cwd(), "..", "scripts", "prove.sh"), []);
@@ -283,7 +284,7 @@ export async function POST(request: Request) {
       witnessReady: true,
       proofReady: proofHex !== null,
       proofHex,
-      mockProof: process.env.ZK_MOCK_PROOF === "true",
+      mockProof: mockProof,
     });
   } catch (error) {
     const message = formatError(error) || "prove failed";

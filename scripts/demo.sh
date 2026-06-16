@@ -21,5 +21,6 @@ echo "5. CLI"
 
 echo ""
 echo "Done."
+echo "  E2E testnet: ./scripts/e2e_testnet.sh"
 echo "  Web wallet: cd web && npm run dev"
 echo "  Testnet vault: CAQMBCLAIM6ACM2LHKNUYHQUOQKF73NWXASPV6ZTY3JZET72N3HTGM54"

@@ -10,3 +10,7 @@ export const VAULT_CONTRACT_ID =
 export const NATIVE_XLM_SAC =
   process.env.NEXT_PUBLIC_NATIVE_XLM_SAC ??
   "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
+
+/** Deployed testnet vault uses 6-arg shielded_send (no epk / encrypted_note). */
+export const VAULT_LEGACY_SEND =
+  process.env.NEXT_PUBLIC_VAULT_LEGACY_SEND !== "false";

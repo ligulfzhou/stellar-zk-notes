@@ -36,6 +36,15 @@ enum Commands {
         #[arg(default_value = "testnet")]
         network: String,
     },
+    /// Run full testnet e2e (deposit / send / withdraw) via scripts/e2e_testnet.sh
+    E2eTestnet {
+        /// deposit | withdraw | send | all (default: all)
+        #[arg(long, default_value = "all")]
+        flow: String,
+        /// Extra args forwarded to the Node e2e runner
+        #[arg(last = true)]
+        extra: Vec<String>,
+    },
 }
 
 fn repo_root() -> PathBuf {
@@ -57,6 +66,25 @@ fn run_script(script: &str, args: &[&str]) -> Result<String, String> {
         return Err(format!("{script} failed: {stderr}"));
     }
     Ok(String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+fn run_e2e_testnet(flow: &str, extra: &[String]) -> Result<(), String> {
+    let script = repo_root().join("scripts").join("e2e_testnet.sh");
+    let mut cmd = Command::new(&script);
+    cmd.arg("--flow").arg(flow);
+    cmd.args(extra);
+    cmd.env(
+        "STELLAR_NETWORK_PASSPHRASE",
+        "Test SDF Network ; September 2015",
+    );
+    let status = cmd
+        .status()
+        .map_err(|e| format!("failed to run {}: {e}", script.display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("e2e testnet failed (exit {})", status.code().unwrap_or(-1)))
+    }
 }
 
 fn run_shielded_address(mnemonic: &str, network: &str) -> Result<(), String> {
@@ -88,6 +116,7 @@ fn main() {
             println!();
             println!("Quick checks:");
             println!("  ./scripts/demo.sh");
+            println!("  ./scripts/e2e_testnet.sh");
             println!("  cd web && npm run dev");
             Ok(())
         }
@@ -111,6 +140,7 @@ fn main() {
         Commands::ShieldedAddress { mnemonic, network } => {
             run_shielded_address(&mnemonic, &network)
         }
+        Commands::E2eTestnet { flow, extra } => run_e2e_testnet(&flow, &extra),
     };
 
     if let Err(err) = result {

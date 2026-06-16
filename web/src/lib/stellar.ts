@@ -10,7 +10,7 @@ import {
 } from "@stellar/stellar-sdk";
 import { fieldDecToBytes32, fieldHexToBytes32 } from "./field";
 import { formatError } from "./format-error";
-import { STELLAR_NETWORK, VAULT_CONTRACT_ID } from "./config";
+import { STELLAR_NETWORK, VAULT_CONTRACT_ID, VAULT_LEGACY_SEND } from "./config";
 import {
   accountExistsViaApi,
   fetchStellarAccount,
@@ -203,6 +203,17 @@ export async function shieldedSendToVault(params: {
 }): Promise<string> {
   const epk = params.epkBytes ?? new Uint8Array(32);
   const encrypted = params.encryptedNoteBytes ?? new Uint8Array();
+  const args = [
+    xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.nullifierHex))),
+    xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.newCommitmentHex))),
+    xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.merkleRootHex))),
+    xdr.ScVal.scvBytes(Buffer.from(params.publicInputs)),
+    xdr.ScVal.scvBytes(Buffer.from(params.proofBytes)),
+  ];
+  if (!VAULT_LEGACY_SEND) {
+    args.push(xdr.ScVal.scvBytes(Buffer.from(epk)));
+    args.push(xdr.ScVal.scvBytes(Buffer.from(encrypted)));
+  }
   return signAndSend(
     params.sourcePublicKey,
     async (source) => {
@@ -210,18 +221,7 @@ export async function shieldedSendToVault(params: {
       return new TransactionBuilder(source, {
         fee: "1000000",
         networkPassphrase: networkPassphrase(),
-      }).addOperation(
-        contract.call(
-          "shielded_send",
-          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.nullifierHex))),
-          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.newCommitmentHex))),
-          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.merkleRootHex))),
-          xdr.ScVal.scvBytes(Buffer.from(params.publicInputs)),
-          xdr.ScVal.scvBytes(Buffer.from(params.proofBytes)),
-          xdr.ScVal.scvBytes(Buffer.from(epk)),
-          xdr.ScVal.scvBytes(Buffer.from(encrypted))
-        )
-      );
+      }).addOperation(contract.call("shielded_send", ...args));
     },
     params.signTransaction
   );
