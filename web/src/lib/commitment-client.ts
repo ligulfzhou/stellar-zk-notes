@@ -1,32 +1,48 @@
+import { executeNoirField } from "./noir-runtime";
+
 export async function computeCommitment(
   value: string,
   secret: string,
   nullifierSecret: string
 ): Promise<string> {
-  const res = await fetch("/api/commitment", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ value, secret, nullifierSecret }),
+  return executeNoirField("note_hash", {
+    value,
+    secret,
+    nullifier_secret: nullifierSecret,
   });
-  const data = (await res.json()) as { commitment?: string; error?: string };
-  if (!res.ok || !data.commitment) {
-    throw new Error(data.error ?? "commitment failed");
-  }
-  return data.commitment;
 }
 
 export async function computeNullifier(
   nullifierSecret: string,
   commitment: string
 ): Promise<string> {
-  const res = await fetch("/api/nullifier", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ nullifierSecret, commitment }),
+  const commitmentDec = BigInt(
+    commitment.startsWith("0x") ? commitment : `0x${commitment}`
+  ).toString();
+  return executeNoirField("hash_pair", {
+    left: nullifierSecret,
+    right: commitmentDec,
   });
-  const data = (await res.json()) as { nullifier?: string; error?: string };
-  if (!res.ok || !data.nullifier) {
-    throw new Error(data.error ?? "nullifier failed");
-  }
-  return data.nullifier;
+}
+
+/** Batch commitment for rescan — secrets never leave the browser. */
+export async function computeCommitmentsBatch(
+  items: Array<{
+    id: string;
+    value: string;
+    secret: string;
+    nullifierSecret: string;
+  }>
+): Promise<Record<string, string>> {
+  const out: Record<string, string> = {};
+  await Promise.all(
+    items.map(async (item) => {
+      out[item.id] = await computeCommitment(
+        item.value,
+        item.secret,
+        item.nullifierSecret
+      );
+    })
+  );
+  return out;
 }

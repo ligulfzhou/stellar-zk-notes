@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -7,9 +7,11 @@ import { NextResponse } from "next/server";
 import { merkleWitness, merkleWitnessFromTreeState, fieldHexListToBigInt } from "@/server/merkle";
 import { formatError } from "@/lib/format-error";
 import { findCommitmentLeafIndex } from "@/lib/vault-events";
+import { assertMockProofAllowed, isMockProofEnabled } from "@/lib/proof-config";
 import type { VaultTreeState } from "@/server/soroban-vault";
 
 const execFileAsync = promisify(execFile);
+const PROOF_BYTES = 456 * 32;
 
 type ProveRequest = {
   mode: "shielded_send" | "withdraw";
@@ -68,13 +70,15 @@ function fieldHexToDecimal(hex: string): string {
   return BigInt(hex.startsWith("0x") ? hex : `0x${hex}`).toString();
 }
 
-function onChainRootBigInt(hex: string): bigint {
-  return hexToBigInt(hex);
-}
-
 export async function POST(request: Request) {
+  try {
+    assertMockProofAllowed();
+  } catch (error) {
+    return NextResponse.json({ error: formatError(error) }, { status: 503 });
+  }
+
   const body = (await request.json()) as ProveRequest;
-  const mockProof = process.env.ZK_MOCK_PROOF === "true";
+  const mockProof = isMockProofEnabled();
 
   try {
     const spendCommitmentHex = await computeCommitmentHex(
@@ -184,30 +188,22 @@ export async function POST(request: Request) {
       const actual =
         "0x" + root.toString(16).padStart(64, "0").toLowerCase();
       if (expected !== actual) {
-        // Deployed vault uses poseidon2 t=3; Noir witness uses t=4.
-        if (mockProof) {
-          root = onChainRootBigInt(body.onChainMerkleRoot);
-        } else {
-          return NextResponse.json(
-            {
-              error:
-                "Merkle root mismatch — redeploy vault with updated hash or Rescan",
-            },
-            { status: 400 }
-          );
-        }
+        return NextResponse.json(
+          {
+            error:
+              "Merkle root mismatch — Rescan from chain or retry after sync",
+          },
+          { status: 400 }
+        );
       }
     }
 
-    let newValue = "0";
-    let newSecret = "0";
-    let newNullifierSecret = "0";
     let newCommitmentHex = "0x0";
     let publicAmount = "0";
-    let mode = "0";
+    let newSecret = "0";
+    let newNullifierSecret = "0";
 
     if (body.mode === "shielded_send") {
-      newValue = body.value;
       newSecret = body.newSecret ?? "";
       newNullifierSecret = body.newNullifierSecret ?? "";
       if (!newSecret || !newNullifierSecret) {
@@ -218,68 +214,94 @@ export async function POST(request: Request) {
       }
       const commitRes = await execFileAsync(
         path.join(process.cwd(), "..", "scripts", "compute_commitment.sh"),
-        [newValue, newSecret, newNullifierSecret]
+        [body.value, newSecret, newNullifierSecret]
       );
       newCommitmentHex = commitRes.stdout.trim();
-      mode = "0";
       publicAmount = "0";
     } else {
       publicAmount = body.value;
-      mode = "1";
-      newCommitmentHex = "0x0";
     }
 
-    const witnessPayload = {
-      value: body.value,
-      secret: body.secret,
-      nullifier_secret: body.nullifierSecret,
-      merkle_path: merklePath.map((p) => p.toString()),
-      path_indices: indices,
-      new_value: newValue,
-      new_secret: newSecret,
-      new_nullifier_secret: newNullifierSecret,
-      merkle_root: root.toString(),
-      nullifier: fieldHexToDecimal(nullifierHex),
-      new_commitment: BigInt(newCommitmentHex).toString(),
-      public_amount: publicAmount,
-      mode,
+    const pad4 = <T,>(values: T[], fill: T) => {
+      const out = [...values];
+      while (out.length < 4) out.push(fill);
+      return out.slice(0, 4);
     };
 
-    const witnessScript = path.join(process.cwd(), "..", "scripts", "witness_spend.sh");
+    const emptyPath = Array(16).fill("0");
+    const emptyIdx = Array(16).fill(false);
+
+    const witnessPayload = {
+      spend_value: pad4([body.value], "0"),
+      spend_secret: pad4([body.secret], "0"),
+      spend_nullifier_secret: pad4([body.nullifierSecret], "0"),
+      spend_merkle_path: [merklePath.map((p) => p.toString()), emptyPath, emptyPath, emptyPath],
+      spend_path_indices: [indices, emptyIdx, emptyIdx, emptyIdx],
+      out_value: pad4(body.mode === "shielded_send" ? [body.value] : [], "0"),
+      out_secret: pad4(body.mode === "shielded_send" ? [newSecret] : [], "0"),
+      out_nullifier_secret: pad4(body.mode === "shielded_send" ? [newNullifierSecret] : [], "0"),
+      merkle_root: root.toString(),
+      nullifier: pad4([fieldHexToDecimal(nullifierHex)], "0"),
+      new_commitment: pad4(
+        body.mode === "shielded_send" ? [BigInt(newCommitmentHex).toString()] : [],
+        "0"
+      ),
+      public_amount: publicAmount,
+    };
+
+    const repoRoot = path.join(process.cwd(), "..");
+    const proveScript = path.join(repoRoot, "scripts", "prove_from_witness.sh");
+    const proofFile = path.join(repoRoot, "artifacts", "transfer_actions", "proof");
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "zk-notes-witness-"));
     const witnessPath = path.join(tmpDir, "witness.json");
+    let proofHex: string | null = null;
+
     try {
       await writeFile(witnessPath, JSON.stringify(witnessPayload));
-      // Demo mode: mock verifier accepts any proof; skip nargo execute when the
-      // deployed vault Merkle hash (poseidon2 t=3) differs from the Noir circuit (t=4).
-      if (!mockProof) {
-        await execFileAsync(witnessScript, [witnessPath]);
+      if (mockProof) {
+        proofHex = "0x" + "ab".repeat(32);
+      } else if (await hasBarretenberg()) {
+        await execFileAsync(proveScript, [witnessPath], {
+          env: {
+            ...process.env,
+            PATH: `${process.env.HOME}/.bb/bin:${process.env.HOME}/.nargo/bin:${process.env.PATH}`,
+          },
+          maxBuffer: 32 * 1024 * 1024,
+        });
+        const proofBuf = await readFile(proofFile);
+        if (proofBuf.length !== PROOF_BYTES) {
+          throw new Error(
+            `Invalid proof size ${proofBuf.length} (expected ${PROOF_BYTES})`
+          );
+        }
+        proofHex = "0x" + proofBuf.toString("hex");
+      } else {
+        return NextResponse.json(
+          { error: "Barretenberg (bb) required for real proofs" },
+          { status: 503 }
+        );
       }
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
     }
 
-    const artifactsDir = path.join(process.cwd(), "..", "artifacts", "spend_note");
-    let proofHex: string | null = null;
-
-    if (mockProof) {
-      proofHex = "0x" + "ab".repeat(32);
-    } else if (await hasBarretenberg()) {
-      await execFileAsync(path.join(process.cwd(), "..", "scripts", "prove.sh"), []);
-      // proof bytes path depends on bb output — client reads from artifacts
-      proofHex = "generated";
-    }
+    const nullifierHexes = pad4([nullifierHex], "0x0");
+    const newCommitmentHexes = pad4(
+      body.mode === "shielded_send" ? [newCommitmentHex] : [],
+      "0x0"
+    );
 
     return NextResponse.json({
       merkleRoot: "0x" + root.toString(16).padStart(64, "0"),
       nullifier: nullifierHex,
+      nullifierHexes,
       newCommitment: newCommitmentHex,
+      newCommitmentHexes,
       publicInputs: {
         merkle_root: witnessPayload.merkle_root,
         nullifier: witnessPayload.nullifier,
         new_commitment: witnessPayload.new_commitment,
         public_amount: witnessPayload.public_amount,
-        mode: witnessPayload.mode,
       },
       witnessReady: true,
       proofReady: proofHex !== null,

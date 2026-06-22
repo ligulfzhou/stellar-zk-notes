@@ -4,36 +4,36 @@
 
 ## 前置条件
 
-1. `web/.env.local` 已配置（`NEXT_PUBLIC_VAULT_CONTRACT_ID`、`NEXT_PUBLIC_SOROBAN_RPC_URL`、`ZK_MOCK_PROOF=true`）
+1. `web/.env.local` 已配置（`NEXT_PUBLIC_VAULT_CONTRACT_ID`、`NEXT_PUBLIC_SOROBAN_RPC_URL`）
 2. `nargo` 在 PATH（commitment/nullifier 脚本）
 3. Stellar CLI 密钥 **或** 环境变量 `STELLAR_SECRET`（**必须已有 testnet XLM**）
 
-```bash
-# 方式 A：CLI 密钥（默认尝试 alice，再 admin）
-stellar keys generate alice --network testnet   # 首次
-# 在 https://lab.stellar.org/account/create 给 alice 的 G 地址充 testnet XLM
+| 模式 | `ZK_MOCK_PROOF` | Verifier |
+|------|-----------------|----------|
+| Demo | `true` | MockVerifier |
+| Real ZK | `false` | UltraHonk (`deploy_testnet.sh --real-zk`) + `bb` |
 
-# 方式 B：直接传 secret
-export STELLAR_SECRET=SD...
+**Testnet budget:** UltraHonk verify is **~76M** instructions with the NethermindEth SDK26 verifier (fits testnet 400M cap). Run: `ZK_MOCK_PROOF=false STELLAR_SOURCE=admin ./scripts/e2e_testnet.sh --flow all`
+
+```bash
+# 在 https://lab.stellar.org/account/create 创建并领取 testnet XLM
+
+export STELLAR_SECRET=SD...   # 或 STELLAR_SOURCE=admin
 ```
 
 ## 运行
 
 ```bash
-# 完整流程：deposit → shielded send → withdraw
+# 完整流程：register → deposit → shielded send → withdraw
 ./scripts/e2e_testnet.sh
 
-# 仅 deposit + withdraw
-./scripts/e2e_testnet.sh --flow withdraw
+# Real ZK (需要 bb + --real-zk 部署的 vault):
+ZK_MOCK_PROOF=false ./scripts/e2e_testnet.sh --flow all
 
-# 仅 deposit + shielded send
-./scripts/e2e_testnet.sh --flow send
-
-# 仅 deposit
-./scripts/e2e_testnet.sh --flow deposit
-
-# Rust CLI 包装
-cd cli/zk-notes && cargo run -- e2e-testnet --flow all
+# 双账户：Alice 存款 → 发给 Bob 的 G… → Bob 提现
+# 需要 stellar keys 里存在 alice、bob 两个账户且均有 testnet XLM
+./scripts/prepare_e2e_accounts.sh alice bob
+ZK_MOCK_PROOF=false ./scripts/e2e_testnet.sh --flow alice-bob
 ```
 
 ## 环境变量
@@ -41,28 +41,33 @@ cd cli/zk-notes && cargo run -- e2e-testnet --flow all
 | 变量 | 说明 | 默认 |
 |------|------|------|
 | `STELLAR_SECRET` | 签名用 secret key | — |
-| `STELLAR_SOURCE` | CLI 密钥名，逗号分隔 | `alice,admin` |
+| `STELLAR_SOURCE` | CLI 密钥名 | `admin` |
+| `ZK_MOCK_PROOF` | mock vs real proofs | `true` |
 | `E2E_AMOUNT_STROOPS` | 每笔 note 金额 | `1000000` (0.1 XLM) |
 | `E2E_DERIVATION_INDEX` | 测试 note 派生 index | 时间戳 mod 1e6 |
-| `E2E_SKIP_FUND` | 跳过 Friendbot | `false` |
+| `E2E_ALICE_SOURCE` | alice-bob 流程 Alice 密钥名 | `alice` |
+| `E2E_BOB_SOURCE` | alice-bob 流程 Bob 密钥名 | `bob` |
 
-## 交互流程（`--flow all`）
+## 交互流程
+
+**`--flow all`（单账户自环）**
 
 ```
-1. 从固定 e2e root seed + derivationIndex 派生 secret / nullifierSecret
-2. compute_commitment.sh → commitment
-3. vault.deposit(from, amount, commitment)     → leaf N
-4. buildChainState + merkleWitnessFromTreeState → prove (mock)
-5. vault.shielded_send(nullifier, new_commitment, root, …)  [6-arg legacy]
-6. vault.withdraw(to, nullifier, amount, root, …)
-7. 等待链上确认
+1. register_shielded_key (G → zk1)
+2. deposit → leaf N
+3. merkle witness + prove (mock or bb UltraHonk)
+4. shielded_send (ECDH encrypted)
+5. withdraw
 ```
 
-## 与 Web 钱包的关系
+**`--flow alice-bob`（双账户）**
 
-- E2E 使用 **独立测试 seed**（`e2eRootSeed()`），不会动浏览器 passkey / IndexedDB 里的 notes
-- Web 端手动测试前，先跑 `./scripts/e2e_testnet.sh` 确认链上 vault + mock proof 通路正常
-- 当前 testnet vault 为 **legacy 6-arg shielded_send** + **poseidon2 T=3** Merkle；mock 模式已适配
+```
+1. Bob register_shielded_key
+2. Alice deposit
+3. Alice shielded_send (encrypt for Bob's zk1)
+4. Bob withdraw
+```
 
 ## 目录
 
@@ -70,8 +75,8 @@ cd cli/zk-notes && cargo run -- e2e-testnet --flow all
 scripts/e2e/
   config.ts    # 读取 web/.env.local
   crypto.ts    # commitment / nullifier 脚本
-  field.ts     # public inputs 编码
+  field.ts     # public inputs + proof bytes
   stellar.ts   # RPC 存取款 / send / withdraw
-  prove.ts     # 链状态 + mock prove
+  prove.ts     # 链状态 + merkle witness + prove
   run.ts       # 主流程
 ```

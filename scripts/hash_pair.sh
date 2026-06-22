@@ -12,4 +12,5 @@ EOF
 cd "$CIRCUIT_DIR"
 OUTPUT="$(nargo execute 2>&1)"
 rm -f "$CIRCUIT_DIR/Prover.toml"
-echo "$OUTPUT" | awk -F': ' '/Circuit output:/ {print $2; exit}'
+RAW="$(echo "$OUTPUT" | awk -F': ' '/Circuit output:/ {print $2; exit}')"
+"$ROOT/scripts/normalize_field_output.sh" "$RAW"

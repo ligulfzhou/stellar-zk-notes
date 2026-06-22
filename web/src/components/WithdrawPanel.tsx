@@ -1,13 +1,18 @@
 "use client";
 
-import { useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { signTransactionXdr } from "@/lib/wallet";
 import { resolveNoteSecretsFromVault } from "@/lib/note-secrets";
+import { proveWitness } from "@/lib/prove-client";
+import type { ProvePhase } from "@/lib/prover-client";
+import { ProveProgress } from "@/components/ProveProgress";
+import { buildWithdrawWitness } from "@/lib/action-witness";
 import { proofBytesFromHex } from "@/lib/proof";
 import { encodePublicInputs, withdrawFromVault } from "@/lib/stellar";
 import { formatError } from "@/lib/format-error";
 import { persistVaultState, useWalletStore } from "@/store/useWalletStore";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
+import { TxLink } from "@/components/TxLink";
 
 export function WithdrawPanel() {
   const { publicKey, notes, chainCommitments, refreshNotes } = useWalletStore();
@@ -15,8 +20,21 @@ export function WithdrawPanel() {
   const [noteId, setNoteId] = useState("");
   const [destination, setDestination] = useState("");
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [provePhase, setProvePhase] = useState<ProvePhase | null>(null);
+  const [proveDetail, setProveDetail] = useState<string | null>(null);
+  const [status, setStatus] = useState<ReactNode>(null);
   const [error, setError] = useState<string | null>(null);
+  const proveAbortRef = useRef<AbortController | null>(null);
+
+  function cancelProve() {
+    proveAbortRef.current?.abort();
+    proveAbortRef.current = null;
+    setLoading(false);
+    setProvePhase(null);
+    setProveDetail(null);
+    setStatus(null);
+    setError("Proof cancelled");
+  }
 
   const unspent = notes.filter((n) => n.status === "unspent");
 
@@ -37,6 +55,8 @@ export function WithdrawPanel() {
 
     setLoading(true);
     setError(null);
+    setProvePhase(null);
+    setProveDetail(null);
     try {
       if (!unlocked) {
         setStatus("Unlocking passkey…");
@@ -68,50 +88,44 @@ export function WithdrawPanel() {
       }
       const chain = chainData.commitments;
 
-      setStatus("Generating withdraw witness…");
+      setStatus("Building witness in browser…");
       const spendSecrets = await resolveNoteSecretsFromVault(note);
-      const proveRes = await fetch("/api/prove-spend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "withdraw",
-          value: note.value.toString(),
-          secret: spendSecrets.secret,
-          nullifierSecret: spendSecrets.nullifierSecret,
-          leafIndex: note.leafIndex,
-          leafCount: chainData.leafCount ?? chain.length,
-          onChainMerkleRoot: chainData.merkleRoot ?? undefined,
-          commitments: chain,
-          noteCommitment: note.commitment,
-          treeState: chainData.treeState ?? undefined,
-        }),
+      const built = await buildWithdrawWitness({
+        value: note.value.toString(),
+        secret: spendSecrets.secret,
+        nullifierSecret: spendSecrets.nullifierSecret,
+        leafIndex: note.leafIndex,
+        leafCount: chainData.leafCount ?? chain.length,
+        onChainMerkleRoot: chainData.merkleRoot ?? undefined,
+        commitments: chain,
+        noteCommitment: note.commitment,
+        treeState: chainData.treeState ?? undefined,
       });
-      const prove = (await proveRes.json()) as {
-        error?: string;
-        merkleRoot?: string;
-        nullifier?: string;
-        proofHex?: string;
-        publicInputs?: Record<string, string>;
-      };
-      if (!proveRes.ok || !prove.merkleRoot || !prove.publicInputs) {
-        throw new Error(prove.error ?? "Prove API failed");
-      }
+
+      setStatus("Generating ZK proof…");
+      proveAbortRef.current = new AbortController();
+      const prove = await proveWitness(built.witness, {}, (phase, detail) => {
+        setProvePhase(phase);
+        setProveDetail(detail ?? null);
+      }, { signal: proveAbortRef.current.signal });
+      proveAbortRef.current = null;
+      setProvePhase(null);
+      setProveDetail(null);
 
       setStatus("Submitting withdraw…");
       const publicInputs = encodePublicInputs({
-        merkleRootHex: prove.merkleRoot,
-        nullifierHex: prove.nullifier!,
-        newCommitmentHex: "0x0",
-        publicAmount: prove.publicInputs.public_amount,
-        mode: prove.publicInputs.mode,
+        merkleRootHex: prove.merkleRoot ?? built.merkleRootHex,
+        nullifierHexes: built.nullifierHexes,
+        newCommitmentHexes: ["0x0", "0x0", "0x0", "0x0"],
+        publicAmount: note.value.toString(),
       });
 
       const txHash = await withdrawFromVault({
         sourcePublicKey: publicKey,
         recipient: destination,
         amountStroops: note.value,
-        nullifierHex: prove.nullifier!,
-        merkleRootHex: prove.merkleRoot,
+        nullifierHex: built.nullifierHexes[0]!,
+        merkleRootHex: prove.merkleRoot ?? built.merkleRootHex,
         publicInputs,
         proofBytes: proofBytesFromHex(prove.proofHex),
         signTransaction: async (xdr) => signTransactionXdr(xdr, publicKey),
@@ -122,12 +136,23 @@ export function WithdrawPanel() {
       );
       await persistVaultState(updatedNotes, chain);
       await refreshNotes();
-      setStatus(`Withdrawn. Tx: ${txHash.slice(0, 12)}…`);
+      setStatus(
+        <>
+          Withdrawn. Tx: <TxLink txHash={txHash} />
+        </>
+      );
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setError("Proof cancelled");
+        setStatus(null);
+        return;
+      }
       setError(formatError(err) || "Withdraw failed");
       setStatus(null);
     } finally {
       setLoading(false);
+      setProvePhase(null);
+      setProveDetail(null);
     }
   }
 
@@ -163,6 +188,7 @@ export function WithdrawPanel() {
         {loading ? "Processing…" : "Withdraw"}
       </button>
       {status ? <p className="mt-4 text-sm text-emerald-300">{status}</p> : null}
+      <ProveProgress phase={provePhase} detail={proveDetail} onCancel={cancelProve} />
       {error ? <p className="mt-4 text-sm text-red-300">{error}</p> : null}
     </section>
   );

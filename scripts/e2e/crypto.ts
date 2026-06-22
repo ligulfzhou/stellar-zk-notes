@@ -35,8 +35,16 @@ export async function computeNullifierHex(
 
 /** Deterministic test root seed (not passkey — stable across runs). */
 export function e2eRootSeed(): Uint8Array {
+  return e2ePartySeed("default");
+}
+
+/** Per-party E2E root seed for multi-account flows (alice-bob). */
+export function e2ePartySeed(party: "default" | "alice" | "bob"): Uint8Array {
   const bytes = new Uint8Array(32);
-  const label = "zk-notes-e2e-test-root-v1";
+  const label =
+    party === "default"
+      ? "zk-notes-e2e-test-root-v1"
+      : `zk-notes-e2e-${party}-v1`;
   for (let i = 0; i < 32; i++) {
     bytes[i] = label.charCodeAt(i % label.length) ^ i;
   }

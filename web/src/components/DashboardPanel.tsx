@@ -6,6 +6,7 @@ import {
   scanIncomingEncryptedNotes,
 } from "@/lib/incoming-scanner";
 import { fetchVaultChainState } from "@/lib/vault-events-client";
+import { fetchPublicXlmBalance } from "@/lib/account-balance";
 import { loadVault } from "@/lib/note-store";
 import { persistFullVault, useWalletStore } from "@/store/useWalletStore";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
@@ -15,6 +16,7 @@ export function DashboardPanel() {
     useWalletStore();
   const { unlocked, unlock, rootSeed } = usePasskeyStore();
   const [chainLeafCount, setChainLeafCount] = useState<number | null>(null);
+  const [publicBalance, setPublicBalance] = useState<string | null>(null);
   const [activity, setActivity] = useState<string[]>([]);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
@@ -23,6 +25,16 @@ export function DashboardPanel() {
     chainLeafCount === null
       ? null
       : chainCommitments.length === chainLeafCount;
+
+  useEffect(() => {
+    void (async () => {
+      if (!publicKey) {
+        setPublicBalance(null);
+        return;
+      }
+      setPublicBalance(await fetchPublicXlmBalance(publicKey));
+    })();
+  }, [publicKey]);
 
   useEffect(() => {
     void (async () => {
@@ -77,6 +89,10 @@ export function DashboardPanel() {
 
   return (
     <section className="grid gap-4 md:grid-cols-3">
+      <Card
+        title="Public XLM"
+        value={publicBalance !== null ? `${publicBalance} XLM` : "—"}
+      />
       <Card title="Shielded balance" value={`${formatStroops(shieldedBalance)} XLM`} />
       <Card title="Unspent notes" value={String(unspent)} />
       <Card
@@ -111,10 +127,17 @@ export function DashboardPanel() {
           <p className="mt-2 text-xs text-emerald-300">{syncStatus}</p>
         ) : null}
       </Panel>
+      <Panel title="Limits">
+        <ul className="space-y-2 text-sm text-zinc-400">
+          <li>Merkle tree height 16 (~65k commitments max).</li>
+          <li>Up to 4 inputs and 4 outputs per transaction (change supported).</li>
+          <li>Native XLM only; proofs run locally when ZK real.</li>
+        </ul>
+      </Panel>
       <Panel title="How it works">
         <ol className="list-decimal space-y-2 pl-5 text-sm text-zinc-300">
           <li>Deposit → commitment on-chain, secrets from passkey PRF.</li>
-          <li>Send to zk1… → ECDH-encrypted note on-chain.</li>
+          <li>Send to zk1… or registered G… → ECDH-encrypted note on-chain.</li>
           <li>Withdraw → ZK proof + public payout.</li>
         </ol>
       </Panel>

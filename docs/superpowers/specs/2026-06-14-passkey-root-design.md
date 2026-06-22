@@ -32,7 +32,7 @@ Replace BIP39 mnemonic as the shielded wallet root with **WebAuthn passkey + PRF
 |-------|---------|
 | `passkey` | Public metadata: `userId`, `prfSalt`, credential IDs, recovery wraps |
 | `notes[].derivationIndex` | Passkey-derived notes (secrets re-derived on unlock) |
-| `notes` without index | Payment file imports (secrets stored in note) |
+| `notes` without index | ECDH-received notes (secrets stored from on-chain decrypt) |
 
 **Never stored:** root seed, PRF output.
 
@@ -65,7 +65,7 @@ Platform sync (iCloud Keychain / Google Password Manager) remains the primary mu
 
 - Noir circuit, Soroban vault, Stellar Wallets Kit `G…` address
 - zk1 address format (`zk1:testnet:…`)
-- Payment file fallback for `G…` recipients
+- On-chain `register_shielded_key` maps `G…` → X25519 receive pubkey
 
 ## Threat model notes
 

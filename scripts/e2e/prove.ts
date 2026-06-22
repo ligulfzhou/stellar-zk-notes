@@ -1,4 +1,6 @@
 import { execFile } from "node:child_process";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import {
@@ -26,16 +28,23 @@ export type NoteSecrets = {
 export type ProveResult = {
   merkleRoot: string;
   nullifierHex: string;
+  nullifierHexes: string[];
   newCommitmentHex: string;
+  newCommitmentHexes: string[];
   publicInputs: {
     merkle_root: string;
-    nullifier: string;
-    new_commitment: string;
+    nullifier: string[];
+    new_commitment: string[];
     public_amount: string;
-    mode: string;
   };
   proofBytes: Uint8Array;
 };
+
+function pad4<T>(values: T[], fill: T): T[] {
+  const out = [...values];
+  while (out.length < 4) out.push(fill);
+  return out.slice(0, 4);
+}
 
 function fieldHexToDecimal(hex: string): string {
   return BigInt(hex.startsWith("0x") ? hex : `0x${hex}`).toString();
@@ -57,6 +66,72 @@ export async function buildNoteSecrets(
   const commitmentHex = await computeCommitmentHex(value, secret, nullifierSecret);
   const nullifierHex = await computeNullifierHex(nullifierSecret, commitmentHex);
   return { secret, nullifierSecret, commitmentHex, nullifierHex };
+}
+
+async function buildMerkleWitness(params: {
+  chain: Awaited<ReturnType<typeof buildChainState>>;
+  leafIndex: number;
+  spendLeaf: bigint;
+}) {
+  const { chain, leafIndex, spendLeaf } = params;
+  const hasGaps = chain.commitments
+    .slice(0, chain.leafCount!)
+    .some((slot, i) => i < chain.leafCount! && !slot);
+
+  if (hasGaps && chain.treeState) {
+    const { filled, zeros } = fieldHexListToBigInt(
+      chain.treeState.filled,
+      chain.treeState.zeros
+    );
+    const leafAt = (index: number) => {
+      const slot = chain.commitments[index];
+      return slot ? hexToBigInt(slot) : undefined;
+    };
+    return merkleWitnessFromTreeState({
+      leafCount: chain.leafCount!,
+      targetIndex: leafIndex,
+      targetLeaf: spendLeaf,
+      filled,
+      zeros,
+      leafAt,
+    });
+  }
+
+  const leaves: bigint[] = [];
+  for (let i = 0; i < chain.leafCount!; i++) {
+    const slot = chain.commitments[i];
+    if (!slot) throw new Error(`Missing commitment at leaf ${i}`);
+    leaves.push(hexToBigInt(slot));
+  }
+  return merkleWitness(leaves, leafIndex);
+}
+
+const PROOF_BYTES = 456 * 32;
+
+async function generateRealProof(witnessPayload: Record<string, unknown>): Promise<Uint8Array> {
+  const proveScript = path.join(config.repoRoot, "scripts", "prove_from_witness.sh");
+  const proofFile = path.join(config.repoRoot, "artifacts", "transfer_actions", "proof");
+  const tmpDir = await mkdtemp(path.join(os.tmpdir(), "zk-e2e-witness-"));
+  const witnessPath = path.join(tmpDir, "witness.json");
+  try {
+    await writeFile(witnessPath, JSON.stringify(witnessPayload));
+    await execFileAsync(proveScript, [witnessPath], {
+      env: {
+        ...process.env,
+        PATH: `${process.env.HOME}/.bb/bin:${process.env.HOME}/.nargo/bin:${process.env.PATH}`,
+      },
+      maxBuffer: 32 * 1024 * 1024,
+    });
+    const proof = await readFile(proofFile);
+    if (proof.length !== PROOF_BYTES) {
+      throw new Error(
+        `Invalid proof size ${proof.length} (expected ${PROOF_BYTES}) — check bb prove output`
+      );
+    }
+    return new Uint8Array(proof);
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true });
+  }
 }
 
 export async function proveSpend(params: {
@@ -94,39 +169,12 @@ export async function proveSpend(params: {
     spendCommitmentHex
   );
 
-  const hasGaps = chain.commitments
-    .slice(0, chain.leafCount)
-    .some((slot, i) => i < chain.leafCount && !slot);
-
   const spendLeaf = hexToBigInt(spendCommitmentHex);
-  let root: bigint;
-
-  if (hasGaps && chain.treeState) {
-    const { filled, zeros } = fieldHexListToBigInt(
-      chain.treeState.filled,
-      chain.treeState.zeros
-    );
-    const leafAt = (index: number) => {
-      const slot = chain.commitments[index];
-      return slot ? hexToBigInt(slot) : undefined;
-    };
-    ({ root } = await merkleWitnessFromTreeState({
-      leafCount: chain.leafCount,
-      targetIndex: params.leafIndex,
-      targetLeaf: spendLeaf,
-      filled,
-      zeros,
-      leafAt,
-    }));
-  } else {
-    const leaves: bigint[] = [];
-    for (let i = 0; i < chain.leafCount; i++) {
-      const slot = chain.commitments[i];
-      if (!slot) throw new Error(`Missing commitment at leaf ${i}`);
-      leaves.push(hexToBigInt(slot));
-    }
-    ({ root } = await merkleWitness(leaves, params.leafIndex));
-  }
+  const { path: merklePath, indices, root } = await buildMerkleWitness({
+    chain,
+    leafIndex: params.leafIndex,
+    spendLeaf,
+  });
 
   const onChainRoot = normalizeHex(chain.merkleRoot);
   const computedRoot =
@@ -137,70 +185,80 @@ export async function proveSpend(params: {
         `Merkle root mismatch (on-chain ${onChainRoot}, computed ${computedRoot})`
       );
     }
-    root = hexToBigInt(chain.merkleRoot);
   }
 
   let newCommitmentHex = "0x0";
   let publicAmount = "0";
-  let mode = "0";
+  let newSecret = "0";
+  let newNullifierSecret = "0";
 
   if (params.mode === "shielded_send") {
     if (!params.newSecret || !params.newNullifierSecret) {
       throw new Error("newSecret and newNullifierSecret required for send");
     }
+    newSecret = params.newSecret;
+    newNullifierSecret = params.newNullifierSecret;
     newCommitmentHex = await computeCommitmentHex(
       params.value,
-      params.newSecret,
-      params.newNullifierSecret
+      newSecret,
+      newNullifierSecret
     );
-    mode = "0";
     publicAmount = "0";
   } else {
     publicAmount = params.value;
-    mode = "1";
   }
 
   const merkleRootHex = "0x" + root.toString(16).padStart(64, "0");
+  const witnessRoot = config.mockProof && onChainRoot !== computedRoot
+    ? BigInt(chain.merkleRoot).toString()
+    : root.toString();
 
-  if (!config.mockProof) {
-    const witnessPayload = {
-      value: params.value,
-      secret: params.secret,
-      nullifier_secret: params.nullifierSecret,
-      merkle_path: [] as string[],
-      path_indices: [] as boolean[],
-      new_value: params.mode === "shielded_send" ? params.value : "0",
-      new_secret: params.newSecret ?? "0",
-      new_nullifier_secret: params.newNullifierSecret ?? "0",
-      merkle_root: root.toString(),
-      nullifier: fieldHexToDecimal(nullifierHex),
-      new_commitment: BigInt(newCommitmentHex).toString(),
-      public_amount: publicAmount,
-      mode,
-    };
-    const witnessScript = path.join(config.repoRoot, "scripts", "witness_spend.sh");
-    const tmpDir = path.join(config.repoRoot, "web", ".e2e-witness");
-    await import("node:fs/promises").then(({ mkdir, writeFile, rm }) =>
-      mkdir(tmpDir, { recursive: true }).then(async () => {
-        const witnessPath = path.join(tmpDir, "witness.json");
-        await writeFile(witnessPath, JSON.stringify(witnessPayload));
-        await execFileAsync(witnessScript, [witnessPath]);
-        await rm(tmpDir, { recursive: true, force: true });
-      })
-    );
+  const emptyPath = Array(16).fill("0");
+  const emptyIdx = Array(16).fill(false);
+
+  const witnessPayload = {
+    spend_value: pad4([params.value], "0"),
+    spend_secret: pad4([params.secret], "0"),
+    spend_nullifier_secret: pad4([params.nullifierSecret], "0"),
+    spend_merkle_path: [merklePath.map((p) => p.toString()), emptyPath, emptyPath, emptyPath],
+    spend_path_indices: [indices, emptyIdx, emptyIdx, emptyIdx],
+    out_value: pad4(params.mode === "shielded_send" ? [params.value] : [], "0"),
+    out_secret: pad4(params.mode === "shielded_send" ? [newSecret] : [], "0"),
+    out_nullifier_secret: pad4(params.mode === "shielded_send" ? [newNullifierSecret] : [], "0"),
+    merkle_root: witnessRoot,
+    nullifier: pad4([fieldHexToDecimal(nullifierHex)], "0"),
+    new_commitment: pad4(
+      params.mode === "shielded_send" ? [BigInt(newCommitmentHex).toString()] : [],
+      "0"
+    ),
+    public_amount: publicAmount,
+  };
+
+  let proofBytes: Uint8Array;
+  if (config.mockProof) {
+    proofBytes = mockProofBytes();
+  } else {
+    proofBytes = await generateRealProof(witnessPayload);
   }
+
+  const nullifierHexes = pad4([nullifierHex], "0x0");
+  const newCommitmentHexes = pad4(
+    params.mode === "shielded_send" ? [newCommitmentHex] : [],
+    "0x0"
+  );
 
   return {
     merkleRoot: merkleRootHex,
     nullifierHex,
+    nullifierHexes,
     newCommitmentHex,
+    newCommitmentHexes,
     publicInputs: {
-      merkle_root: root.toString(),
-      nullifier: fieldHexToDecimal(nullifierHex),
-      new_commitment: BigInt(newCommitmentHex).toString(),
+      merkle_root: witnessRoot,
+      nullifier: witnessPayload.nullifier,
+      new_commitment: witnessPayload.new_commitment,
       public_amount: publicAmount,
-      mode,
     },
-    proofBytes: mockProofBytes(),
+    proofBytes,
   };
 }

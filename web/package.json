@@ -3,16 +3,23 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
+    "sync:circuits": "bash ../scripts/sync_noir_circuits.sh",
+    "postinstall": "npm run sync:circuits",
+    "prebuild": "npm run sync:circuits",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
     "lint": "eslint"
   },
   "dependencies": {
+    "@aztec/bb.js": "^0.87.0",
     "@creit.tech/stellar-wallets-kit": "^2.3.0",
     "@noble/ciphers": "^2.2.0",
     "@noble/curves": "^2.2.0",
     "@noble/hashes": "^2.2.0",
+    "@noir-lang/acvm_js": "^1.0.0-beta.9-cb6b7e3.nightly",
+    "@noir-lang/noir_js": "^1.0.0-beta.9-cb6b7e3.nightly",
+    "@noir-lang/noirc_abi": "^1.0.0-beta.9-cb6b7e3.nightly",
     "@stellar/stellar-sdk": "^15.1.0",
     "idb-keyval": "^6.2.5",
     "next": "16.2.9",

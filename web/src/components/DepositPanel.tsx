@@ -6,6 +6,7 @@ import { PasskeySetupModal } from "@/components/PasskeySetupModal";
 import { createNote } from "@/lib/note";
 import { deriveAndAllocateNoteSecrets, loadVault } from "@/lib/note-store";
 import { hasPasskey } from "@/lib/note-types";
+import { computeCommitment } from "@/lib/commitment-client";
 import { stroopsFromXlm } from "@/lib/field";
 import { depositToVault, ensureAccountOnNetwork } from "@/lib/stellar";
 import { stellarExpertTxUrl } from "@/lib/explorer";
@@ -54,7 +55,7 @@ export function DepositPanel() {
     setStatus("Deriving note secrets from passkey…");
 
     try {
-      setStatus("Funding testnet account if needed…");
+      setStatus("Checking account on testnet…");
       await ensureAccountOnNetwork(publicKey);
 
       setStatus("Deriving note secrets from passkey…");
@@ -68,26 +69,18 @@ export function DepositPanel() {
       const derived = await deriveAndAllocateNoteSecrets(publicKey);
       const { secret, nullifierSecret, derivationIndex } = derived;
 
-      setStatus("Computing Poseidon2 commitment…");
-      const res = await fetch("/api/commitment", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          value: valueStroops.toString(),
-          secret,
-          nullifierSecret,
-        }),
-      });
-      const data = (await res.json()) as { commitment?: string; error?: string };
-      if (!res.ok || !data.commitment) {
-        throw new Error(data.error ?? "Commitment API failed");
-      }
+      setStatus("Computing commitment (browser)…");
+      const commitmentHex = await computeCommitment(
+        valueStroops.toString(),
+        secret,
+        nullifierSecret
+      );
 
       setStatus("Signing deposit transaction…");
       const { txHash, leafIndex } = await depositToVault({
         sourcePublicKey: publicKey,
         amountStroops: valueStroops,
-        commitmentHex: data.commitment,
+        commitmentHex: commitmentHex,
         signTransaction: async (xdr) => signTransactionXdr(xdr, publicKey),
       });
 
@@ -96,14 +89,14 @@ export function DepositPanel() {
         ownerPubkey: publicKey,
         secret,
         nullifierSecret,
-        commitmentHex: data.commitment,
+        commitmentHex: commitmentHex,
         leafIndex,
         derivationIndex,
       });
 
       await persistVaultState(
         [...notes, note],
-        upsertChainCommitment(chainCommitments, leafIndex, data.commitment)
+        upsertChainCommitment(chainCommitments, leafIndex, commitmentHex)
       );
       await refreshNotes();
 

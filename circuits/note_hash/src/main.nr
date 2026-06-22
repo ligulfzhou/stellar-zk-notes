@@ -1,6 +1,6 @@
 use poseidon::poseidon2::Poseidon2;
 
-/// Compute note commitment — must match `spend_note` and the Soroban vault.
+/// Compute note commitment - must match `spend_note` and the Soroban vault.
 pub fn compute_commitment(value: Field, secret: Field, nullifier_secret: Field) -> Field {
     Poseidon2::hash([value, secret, nullifier_secret], 3)
 }

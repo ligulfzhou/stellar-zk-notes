@@ -40,6 +40,15 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
+# zk artifacts
+/artifacts/
+
+# local proxy (copy from scripts/proxy.env.example)
+scripts/proxy.env
+
+# third-party (submodule; clone via scripts/setup_ultrahonk.sh)
+/third_party/ultrahonk_soroban_contract/
+
 # web
 web/node_modules
 web/.next

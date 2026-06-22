@@ -8,38 +8,48 @@ UTXO-style private payments on Stellar using zero-knowledge proofs.
 ## What it does
 
 - **Deposit** public tokens into a shielded note (on-chain commitment only)
-- **Shielded send** privately transfer a note to another user (zk1 address + on-chain ECDH delivery)
+- **Shielded send** privately transfer a note to another user (zk1 / registered G… + on-chain ECDH delivery)
 - **Withdraw** to a public Stellar address without revealing the deposit link
 
-ZK is load-bearing: spending requires a Noir proof verified on-chain via UltraHonk.
+Spending requires a Noir `transfer_actions` proof (up to 4 inputs + 4 outputs) verified on-chain via UltraHonk. With `NEXT_PUBLIC_ZK_MOCK_PROOF=false`, proofs are generated **in your browser** (`@aztec/bb.js`); mock verifier is demo-only.
+
+## Demo video script (~2 min)
+
+1. **Connect** Freighter on testnet; header shows `ZK real`.
+2. **Notes** — create passkey, copy `zk1:testnet:…`, register G… on vault.
+3. **Deposit** 0.1 XLM → commitment on-chain (secrets stay local).
+4. **Send** to your own zk1 or a friend's registered G… — show `ProveProgress`, ~10–60s browser prove.
+5. **Withdraw** to a public G… address — observer cannot link deposit tx to withdraw tx.
+6. Mention: UTXO privacy model, height-16 tree cap, not audited.
+
+**Web wallet config** (`web/.env.local`):
+
+```
+NEXT_PUBLIC_VAULT_CONTRACT_ID=CDICJZDBJLGFDGRNJRKLQDFFPBZOUSMXO76ETBYLQSOGYVGWKNKLVSQP
+ZK_MOCK_PROOF=false
+NEXT_PUBLIC_ZK_MOCK_PROOF=false
+```
 
 ### Wallet features
 
-- **zk1 receive address** — X25519 key derived from passkey; share `zk1:testnet:…` instead of G… for shielded payments
-- **On-chain encrypted notes** — send to zk1 stores AES-GCM ciphertext + ephemeral key in `ShieldedSendEvent`
+- **zk1 receive address** — X25519 key derived from passkey
+- **On-chain G… registry** — register zk1 receive key once; others can send to your G… address
+- **On-chain encrypted notes** — AES-GCM ciphertext + ephemeral key in `ShieldedSendEvent`
 - **Passkey root (WebAuthn PRF)** — no seed phrase; Touch ID / Face ID derives note secrets
 - **Recovery passkey** — backup authenticator wraps root seed for cross-device recovery
-- **Chain rescan** — recover deposits on a new browser via vault events + trial derivation indices
+- **Chain rescan** — recover deposits via vault events + derivation index scan
 - **Stellar Wallets Kit** — Freighter, xBull, Albedo, Lobstr, WalletConnect, and more
-- **Payment file fallback** — off-chain JSON when recipient only has a G… address
 
 ## Architecture
 
 ```
 web/          → Next.js wallet (Stellar Wallets Kit + passkey + IndexedDB notes)
-circuits/     → Noir spend_note circuit
+circuits/     → Noir transfer_actions circuit (MAX 4×4)
 contracts/    → Soroban vault + verifier
 cli/          → Rust developer CLI
 ```
 
-See [design spec](docs/superpowers/specs/2026-06-13-utxo-private-payment-design.md) and [implementation plan](docs/superpowers/plans/2026-06-13-zk-notes-implementation.md).
-
-## Differentiation
-
-| | Nethermind Privacy Pool | Moonlight | zk-notes |
-|--|------------------------|-----------|----------|
-| Model | Account pool + ASP | Address bundling | ZK UTXO notes |
-| Circuits | Circom reference | Non-ZK-native | Self-authored Noir |
+See [design spec](docs/superpowers/specs/2026-06-13-utxo-private-payment-design.md), [mainnet readiness plan](docs/superpowers/plans/2026-06-14-mainnet-readiness.md), and [threat model](docs/threat-model.md).
 
 ## Prerequisites
 
@@ -47,50 +57,80 @@ See [design spec](docs/superpowers/specs/2026-06-13-utxo-private-payment-design.
 - [Stellar CLI](https://developers.stellar.org/docs/tools/cli) 25+
 - [Noir / Nargo](https://noir-lang.org/docs/getting_started/quick_start) (`noirup`)
 - Node.js 20+
+- Barretenberg `bb` — `./scripts/install_zk_tools.sh` (required for real ZK; optional for mock demo)
 
 ## Quick start
 
 ```bash
 # Circuit tests
-cd circuits/spend_note && nargo test
+cd circuits/transfer_actions && nargo test
 
-# Contract tests
-cd contracts && cargo test
+# Contract tests (11 tests incl. withdraw + negative paths)
+cd contracts && cargo test -p vault
 
-# Web wallet (after npm install)
+# Web wallet
+cp web/.env.local.example web/.env.local
 cd web && npm install && npm run dev
+
+# Headless testnet E2E
+STELLAR_SOURCE=admin ./scripts/e2e_testnet.sh --flow all
+
+# Dual-account: Alice deposit → send to Bob's G… → Bob withdraw
+./scripts/prepare_e2e_accounts.sh --fund alice bob
+ZK_MOCK_PROOF=false ./scripts/e2e_testnet.sh --flow alice-bob
 ```
 
 ## Status
 
-✅ **Testnet demo live** — mock verifier + full web flows
-
-| Component | Status |
-|-----------|--------|
-| `spend_note` circuit | 3 tests passing |
-| Vault contract | Deployed on testnet (see below) |
-| Web wallet | Deposit / send (zk1 + G…) / withdraw + Dashboard + IndexedDB vault |
-| UltraHonk proofs | Requires `bb` CLI — see `scripts/prove.sh` |
-| Demo mode | `ZK_MOCK_PROOF=true` + MockVerifier on testnet |
+| Layer | Testnet demo | Real ZK (staging) |
+|-------|--------------|-------------------|
+| Vault + registry | ✅ deployed | ✅ UltraHonk verifier (~76M insn) |
+| Web flows | ✅ deposit / send / withdraw | ✅ browser + CLI proving |
+| Proofs | MockVerifier (`ZK_MOCK_PROOF=true`) | `@aztec/bb.js` in browser + `bb` CLI |
+| CI | ✅ circuits + contracts + web build | + real-ZK E2E job (optional) |
 
 ### Testnet contracts
 
-> **v2 vault** adds `epk` + `encrypted_note` to `shielded_send`. Redeploy with `./scripts/deploy_testnet.sh` and update `NEXT_PUBLIC_VAULT_CONTRACT_ID` if you see invoke errors.
+**Demo (mock verifier):**
 
 | Contract | ID |
 |----------|-----|
-| Vault | `CAQMBCLAIM6ACM2LHKNUYHQUOQKF73NWXASPV6ZTY3JZET72N3HTGM54` |
-| MockVerifier | `CDEDBW5XT4X2JANQRHIWD4QW2WWEEIAMZ6ZK43UV55KDMW6E76AJ3DSK` |
+| Vault | `CBVWCBO7AZNHDACZDDCYS2ZMZHDMG3URJX7FXMZ6YIPKMBVYHFLDKLGY` |
+| MockVerifier | `CBEVEL2RO4K7HCJR7IWA5EJXXH4YKDIH4GVILKRPC4L6SOBXUMKK7IKW` |
 | Native XLM SAC | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
 
-```bash
-cp web/.env.local.example web/.env.local
-# NEXT_PUBLIC_VAULT_CONTRACT_ID is pre-filled in web/.env.local after deploy
-cd web && npm run dev
+**Real ZK (`--real-zk`, keccak UltraHonk):**
 
-# CLI: derive zk1 address from passkey root (dev helper uses test mnemonic in script)
-cargo run -p zk-notes -- shielded-address "twelve words ..."
+| Contract | ID |
+|----------|-----|
+| Vault | `CDICJZDBJLGFDGRNJRKLQDFFPBZOUSMXO76ETBYLQSOGYVGWKNKLVSQP` |
+| UltraHonk Verifier | `CAKHTZW4TFTKDJVYX4EBCBGAQG7KOJTF56OJFBWLHTYGYADPLZ53WWLN` |
+
+```bash
+./scripts/deploy_testnet.sh   # demo: mock verifier
+# Real ZK staging:
+./scripts/install_zk_tools.sh && ./scripts/build_vk.sh && ./scripts/build_ultrahonk_verifier.sh
+STELLAR_SOURCE=admin ./scripts/deploy_testnet.sh --real-zk
+# See docs/deploy.md
 ```
+
+### Environment
+
+| Variable | Demo | Real ZK |
+|----------|------|---------|
+| `ZK_MOCK_PROOF` | `true` | **`false`** |
+| `NEXT_PUBLIC_ZK_MOCK_PROOF` | `true` | **`false`** (browser proving) |
+| `NEXT_PUBLIC_VAULT_LEGACY_SEND` | `false` | `false` |
+
+## Known limitations (mainnet)
+
+- Up to 4 inputs and 4 outputs per transaction (change outputs supported)
+- Merkle tree height 16 (~65k commitments)
+- Single token (native XLM SAC)
+- No ASP / compliance layer
+- Server-side prove API is fallback only — **browser `bb.js`** is the default when `NEXT_PUBLIC_ZK_MOCK_PROOF=false`
+
+Report security issues via [SECURITY.md](SECURITY.md).
 
 ## License
 

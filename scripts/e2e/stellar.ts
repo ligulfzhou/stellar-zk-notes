@@ -34,58 +34,19 @@ function rpcServer(): rpc.Server {
   return new rpc.Server(config.rpcUrl, { allowHttp: true });
 }
 
-export async function ensureFunded(publicKey: string): Promise<void> {
+export async function requireAccountOnNetwork(publicKey: string): Promise<void> {
   const server = rpcServer();
   try {
     await server.getAccount(publicKey);
-    return;
   } catch {
-    /* fund below */
-  }
-
-  if (process.env.E2E_SKIP_FUND === "true") {
     throw new Error(
-      `Account ${publicKey} not on-chain — fund it first or remove E2E_SKIP_FUND`
+      `Account ${publicKey} not found on testnet — fund it at https://lab.stellar.org/account/create then retry`
     );
   }
-
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 20_000);
-  try {
-    const res = await fetch(
-      `https://friendbot.stellar.org?addr=${encodeURIComponent(publicKey)}`,
-      { signal: controller.signal }
-    );
-    const text = await res.text();
-    if (!res.ok && !text.toLowerCase().includes("already funded")) {
-      throw new Error(`Friendbot ${res.status}: ${text.slice(0, 120)}`);
-    }
-  } catch (err) {
-    clearTimeout(timer);
-    const hint =
-      err instanceof Error && err.name === "AbortError"
-        ? "Friendbot timed out"
-        : String(err);
-    throw new Error(
-      `${hint}. Fund ${publicKey} manually (lab.stellar.org) or set STELLAR_SECRET to an already-funded key.`
-    );
-  }
-  clearTimeout(timer);
-
-  for (let i = 0; i < 12; i++) {
-    await new Promise((r) => setTimeout(r, 1500));
-    try {
-      await server.getAccount(publicKey);
-      return;
-    } catch {
-      /* retry */
-    }
-  }
-  throw new Error(`Account ${publicKey} not visible after Friendbot`);
 }
 
 async function loadAccount(publicKey: string): Promise<Account> {
-  await ensureFunded(publicKey);
+  await requireAccountOnNetwork(publicKey);
   return rpcServer().getAccount(publicKey);
 }
 
@@ -212,27 +173,68 @@ export async function withdraw(params: {
   });
 }
 
-export async function shieldedSend(params: {
+export async function registerShieldedKey(params: {
   signer: Signer;
-  nullifierHex: string;
-  newCommitmentHex: string;
+  receivePubkeyBytes: Uint8Array;
+}): Promise<string> {
+  return signAndSend(params.signer, (source) => {
+    const contract = new Contract(requireVaultId());
+    const owner = new Address(params.signer.publicKey);
+    return new TransactionBuilder(source, {
+      fee: "100000",
+      networkPassphrase: config.networkPassphrase,
+    }).addOperation(
+      contract.call(
+        "register_shielded_key",
+        owner.toScVal(),
+        xdr.ScVal.scvBytes(Buffer.from(params.receivePubkeyBytes))
+      )
+    );
+  });
+}
+
+export async function shieldedTransfer(params: {
+  signer: Signer;
+  nullifierHexes: string[];
+  newCommitmentHexes: string[];
   merkleRootHex: string;
   publicInputs: Uint8Array;
   proofBytes: Uint8Array;
+  epkBytes: Uint8Array[];
+  encryptedNoteBytes: Uint8Array[];
 }): Promise<string> {
+  const padHex = (hexes: string[]) => {
+    const out = [...hexes];
+    while (out.length < 4) out.push("0x0");
+    return out.slice(0, 4);
+  };
+  const nullifiers = padHex(params.nullifierHexes);
+  const commitments = padHex(params.newCommitmentHexes);
+  const zero32 = new Uint8Array(32);
+  const dummyEnc = new Uint8Array([0]);
+
+  const epks = [...params.epkBytes];
+  const encs = [...params.encryptedNoteBytes];
+  while (epks.length < 4) epks.push(zero32);
+  while (encs.length < 4) encs.push(dummyEnc);
+
   const args = [
-    xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.nullifierHex))),
-    xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.newCommitmentHex))),
+    ...nullifiers.map((h) => xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(h)))),
+    ...commitments.map((h) => xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(h)))),
     xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.merkleRootHex))),
     xdr.ScVal.scvBytes(Buffer.from(params.publicInputs)),
     xdr.ScVal.scvBytes(Buffer.from(params.proofBytes)),
+    ...epks.flatMap((epk, i) => [
+      xdr.ScVal.scvBytes(Buffer.from(epk)),
+      xdr.ScVal.scvBytes(Buffer.from(encs[i]!)),
+    ]),
   ];
   return signAndSend(params.signer, (source) => {
     const contract = new Contract(requireVaultId());
     return new TransactionBuilder(source, {
       fee: "1000000",
       networkPassphrase: config.networkPassphrase,
-    }).addOperation(contract.call("shielded_send", ...args));
+    }).addOperation(contract.call("shielded_transfer", ...args));
   });
 }
 

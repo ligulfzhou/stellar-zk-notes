@@ -109,9 +109,9 @@ fn main() {
         Commands::Status => {
             println!("zk-notes — UTXO private payments on Stellar");
             println!();
-            println!("Testnet (deployed):");
-            println!("  VAULT_ID=CAQMBCLAIM6ACM2LHKNUYHQUOQKF73NWXASPV6ZTY3JZET72N3HTGM54");
-            println!("  VERIFIER_ID=CDEDBW5XT4X2JANQRHIWD4QW2WWEEIAMZ6ZK43UV55KDMW6E76AJ3DSK");
+            println!("Testnet (transfer_actions, real ZK):");
+            println!("  VAULT_ID=CDICJZDBJLGFDGRNJRKLQDFFPBZOUSMXO76ETBYLQSOGYVGWKNKLVSQP");
+            println!("  VERIFIER_ID=CAKHTZW4TFTKDJVYX4EBCBGAQG7KOJTF56OJFBWLHTYGYADPLZ53WWLN");
             println!("  NATIVE_XLM=CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC");
             println!();
             println!("Quick checks:");

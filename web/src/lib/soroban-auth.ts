@@ -88,6 +88,20 @@ export async function authorizePreparedTransaction(
     return tx.toXDR();
   }
 
+  const needsOwnAddressAuth = auth.some((entry) => {
+    if (!isUnsignedAddressAuth(entry)) return false;
+    const cred = entry.credentials();
+    const authEntryAddress = Address.fromScAddress(
+      cred.address().address()
+    ).toString();
+    return authEntryAddress === address;
+  });
+  if (needsOwnAddressAuth) {
+    throw new Error(
+      "Soroban auth entry was not signed. Reconnect your wallet and approve the auth prompt when Freighter asks."
+    );
+  }
+
   const needsOtherSigner = auth.some((entry) => {
     if (!isUnsignedAddressAuth(entry)) return false;
     const cred = entry.credentials();

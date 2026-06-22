@@ -4,19 +4,16 @@ import { useEffect, useRef, useState } from "react";
 import type { Note } from "@/lib/note";
 import { exportVaultJson, importVaultJson, loadVault } from "@/lib/note-store";
 import { hasPasskey } from "@/lib/note-types";
-import {
-  noteFromPaymentEnvelope,
-  parsePaymentEnvelope,
-} from "@/lib/payment-envelope";
 import { rescanVaultFromChain } from "@/lib/rescan-vault";
 import { formatError } from "@/lib/format-error";
-import { upsertChainCommitment } from "@/lib/vault-events";
 import {
   deriveShieldedReceiveKeysFromRoot,
   encodeZk1Address,
 } from "@/lib/shielded-keys";
 import { isPlatformAuthenticatorAvailable } from "@/lib/passkey";
-import { persistFullVault, persistVaultState, useWalletStore } from "@/store/useWalletStore";
+import { registerShieldedKeyOnVault } from "@/lib/stellar";
+import { signTransactionXdr } from "@/lib/wallet";
+import { persistFullVault, useWalletStore } from "@/store/useWalletStore";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
 
 function formatStroops(value: bigint): string {
@@ -38,10 +35,10 @@ export function NotesPanel() {
   } = usePasskeyStore();
 
   const fileRef = useRef<HTMLInputElement>(null);
-  const paymentRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
+  const [registering, setRegistering] = useState(false);
   const [zk1Address, setZk1Address] = useState<string | null>(null);
   const [passkeyReady, setPasskeyReady] = useState(false);
   const [platformOk, setPlatformOk] = useState(true);
@@ -83,40 +80,30 @@ export function NotesPanel() {
     setStatus("Vault exported (no secrets)");
   }
 
-  async function handleImportPayment(file: File) {
+  async function handleRegisterShieldedKey() {
     setError(null);
     setStatus(null);
     if (!publicKey) {
       setError("Connect wallet first");
       return;
     }
+    setRegistering(true);
     try {
-      const text = await file.text();
-      const envelope = parsePaymentEnvelope(text);
-      if (publicKey && envelope.recipient !== publicKey) {
-        throw new Error("Payment file is for a different Stellar address");
-      }
-      const incoming = await noteFromPaymentEnvelope(envelope);
-      const vault = await loadVault(publicKey);
-      const hasCommitment = vault.chainCommitments.includes(envelope.commitment);
-      const chain = hasCommitment
-        ? vault.chainCommitments
-        : upsertChainCommitment(
-            vault.chainCommitments,
-            envelope.leafIndex,
-            envelope.commitment
-          );
-      const already = vault.notes.some((n) => n.commitment === envelope.commitment);
-      const updatedNotes = already ? vault.notes : [...vault.notes, incoming];
-      await persistVaultState(updatedNotes, chain);
-      await refreshNotes();
-      setStatus(
-        already
-          ? "Payment already in vault"
-          : `Received ${Number(envelope.value) / 1e7} XLM shielded payment`
-      );
+      if (!unlocked) await unlock();
+      const seed = usePasskeyStore.getState().requireSeed();
+      const { publicKey: receivePubkey } = deriveShieldedReceiveKeysFromRoot(seed);
+      setStatus("Registering shielded key on-chain…");
+      const txHash = await registerShieldedKeyOnVault({
+        sourcePublicKey: publicKey,
+        receivePubkeyBytes: receivePubkey,
+        signTransaction: async (xdr) => signTransactionXdr(xdr, publicKey),
+      });
+      setStatus(`Shielded key registered. Tx: ${txHash.slice(0, 12)}…`);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Import payment failed");
+      setError(err instanceof Error ? err.message : "Register failed");
+      setStatus(null);
+    } finally {
+      setRegistering(false);
     }
   }
 
@@ -169,7 +156,7 @@ export function NotesPanel() {
           `${result.vault.chainCommitments.length} commitments, ` +
           `${result.eventsParsed} events` +
           (result.depositsSkipped
-            ? ` (${result.depositsSkipped} need payment file)`
+            ? ` (${result.depositsSkipped} deposit(s) unmatched)`
             : "")
       );
     } catch (err) {
@@ -246,6 +233,17 @@ export function NotesPanel() {
             >
               Copy zk1
             </button>
+            <button
+              type="button"
+              onClick={() => void handleRegisterShieldedKey()}
+              disabled={registering || !passkeyReady}
+              className="mt-2 ml-2 rounded-lg border border-emerald-500/30 px-3 py-1 text-xs text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-50"
+            >
+              {registering ? "Registering…" : "Register on-chain"}
+            </button>
+            <p className="mt-2 text-xs text-zinc-500">
+              Register once so others can send to your G… address with on-chain encryption.
+            </p>
           </div>
         ) : null}
 
@@ -308,13 +306,6 @@ export function NotesPanel() {
           >
             Import JSON
           </button>
-          <button
-            type="button"
-            onClick={() => paymentRef.current?.click()}
-            className="rounded-lg border border-emerald-500/30 px-3 py-1.5 text-sm text-emerald-200 hover:bg-emerald-500/10"
-          >
-            Import payment
-          </button>
           <input
             ref={fileRef}
             type="file"
@@ -323,17 +314,6 @@ export function NotesPanel() {
             onChange={(e) => {
               const file = e.target.files?.[0];
               if (file) void handleImport(file);
-              e.target.value = "";
-            }}
-          />
-          <input
-            ref={paymentRef}
-            type="file"
-            accept="application/json,.json"
-            className="hidden"
-            onChange={(e) => {
-              const file = e.target.files?.[0];
-              if (file) void handleImportPayment(file);
               e.target.value = "";
             }}
           />
@@ -372,7 +352,7 @@ function NoteRow({
   const deriveLabel =
     note.derivationIndex !== undefined
       ? `passkey #${note.derivationIndex}`
-      : "payment import";
+      : "received";
 
   return (
     <li className="rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm">

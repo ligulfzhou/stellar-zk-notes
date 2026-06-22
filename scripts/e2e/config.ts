@@ -31,7 +31,7 @@ export const config = {
     "https://soroban-rpc.testnet.stellar.gateway.fm"
   ),
   vaultId: env("NEXT_PUBLIC_VAULT_CONTRACT_ID"),
-  legacySend: env("NEXT_PUBLIC_VAULT_LEGACY_SEND", "true") !== "false",
+  legacySend: env("NEXT_PUBLIC_VAULT_LEGACY_SEND", "false") === "true",
   mockProof: env("ZK_MOCK_PROOF", "true") === "true",
   networkPassphrase:
     env("STELLAR_NETWORK_PASSPHRASE") ||

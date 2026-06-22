@@ -1,6 +1,7 @@
 import {
   Account,
   Networks,
+  Transaction,
   TransactionBuilder,
   rpc,
 } from "@stellar/stellar-sdk";
@@ -64,7 +65,12 @@ function formatSendTransactionFailure(
 
 export async function sendTransactionXdrOnChain(xdr: string): Promise<string> {
   const server = sorobanRpc();
-  const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase());
+  const tx = TransactionBuilder.fromXDR(xdr, networkPassphrase()) as Transaction;
+  if (tx.signatures.length === 0) {
+    throw new Error(
+      "Transaction has no signatures — wallet did not sign. Check Freighter network (Testnet) and reconnect."
+    );
+  }
 
   for (let attempt = 0; attempt < 4; attempt++) {
     const result = await server.sendTransaction(tx);

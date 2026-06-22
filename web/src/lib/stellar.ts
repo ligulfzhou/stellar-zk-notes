@@ -3,7 +3,6 @@ import {
   Address,
   Contract,
   Networks,
-  Transaction,
   TransactionBuilder,
   nativeToScVal,
   xdr,
@@ -36,31 +35,12 @@ function isTestnet(): boolean {
   return STELLAR_NETWORK.toLowerCase() !== "mainnet";
 }
 
-/** Create and fund a testnet account via Friendbot when missing on-chain. */
+/** Fail fast if the wallet account is missing on-chain (testnet). */
 export async function ensureAccountOnNetwork(publicKey: string): Promise<void> {
   if (!isTestnet()) return;
   if (await accountExistsViaApi(publicKey)) return;
-
-  const res = await fetch("/api/fund-testnet", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ address: publicKey }),
-  });
-  const data = (await res.json()) as { error?: string; funded?: boolean };
-  if (!res.ok || !data.funded) {
-    throw new Error(
-      data.error ??
-        "Could not fund testnet account — open https://lab.stellar.org/account/create and fund this G… address"
-    );
-  }
-
-  for (let attempt = 0; attempt < 12; attempt++) {
-    if (await accountExistsViaApi(publicKey)) return;
-    await new Promise((resolve) => setTimeout(resolve, 1500));
-  }
-
   throw new Error(
-    "Testnet account funding submitted but not visible yet — wait a few seconds and retry"
+    "Account not found on testnet — create and fund it at https://lab.stellar.org/account/create, then reconnect"
   );
 }
 
@@ -79,27 +59,24 @@ async function signAndSend(
   signTransaction: (xdr: string) => Promise<string>
 ): Promise<string> {
   const source = await loadSourceAccount(sourcePublicKey);
-  let builder = await build(source);
-  let tx = builder.setTimeout(180).build();
+  const builder = await build(source);
+  const tx = builder.setTimeout(180).build();
+  let txToSign: string;
   try {
     const { xdr: preparedXdr, latestLedger } = await prepareTransactionViaApi(
       tx.toXDR()
     );
-    const authedXdr = await authorizePreparedTransaction(
+    txToSign = await authorizePreparedTransaction(
       preparedXdr,
       sourcePublicKey,
       latestLedger + 100
     );
-    tx = TransactionBuilder.fromXDR(
-      authedXdr,
-      networkPassphrase()
-    ) as Transaction;
   } catch (err) {
     throw new Error(formatError(err));
   }
   let signed: string;
   try {
-    signed = await signTransaction(tx.toXDR());
+    signed = await signTransaction(txToSign);
   } catch (err) {
     throw new Error(formatError(err) || "Wallet signing cancelled");
   }
@@ -173,47 +150,100 @@ export async function depositToVault(params: {
 
 export function encodePublicInputs(params: {
   merkleRootHex: string;
-  nullifierHex: string;
-  newCommitmentHex: string;
+  nullifierHexes: string[];
+  newCommitmentHexes: string[];
   publicAmount: string;
-  mode: string;
 }): Uint8Array {
+  const pad = (hexes: string[]) => {
+    const out = [...hexes];
+    while (out.length < 4) out.push("0x0");
+    return out.slice(0, 4);
+  };
   const chunks = [
     fieldHexToBytes32(params.merkleRootHex),
-    fieldHexToBytes32(params.nullifierHex),
-    fieldHexToBytes32(params.newCommitmentHex),
+    ...pad(params.nullifierHexes).map(fieldHexToBytes32),
+    ...pad(params.newCommitmentHexes).map(fieldHexToBytes32),
     fieldDecToBytes32(params.publicAmount),
-    fieldDecToBytes32(params.mode),
   ];
-  const out = new Uint8Array(160);
+  const out = new Uint8Array(320);
   chunks.forEach((chunk, i) => out.set(chunk, i * 32));
   return out;
 }
 
-export async function shieldedSendToVault(params: {
+export async function registerShieldedKeyOnVault(params: {
   sourcePublicKey: string;
   signTransaction: (xdr: string) => Promise<string>;
-  nullifierHex: string;
-  newCommitmentHex: string;
+  receivePubkeyBytes: Uint8Array;
+}): Promise<string> {
+  return signAndSend(
+    params.sourcePublicKey,
+    async (source) => {
+      const contract = new Contract(requireVaultId());
+      const owner = new Address(params.sourcePublicKey);
+      return new TransactionBuilder(source, {
+        fee: "100000",
+        networkPassphrase: networkPassphrase(),
+      }).addOperation(
+        contract.call(
+          "register_shielded_key",
+          owner.toScVal(),
+          xdr.ScVal.scvBytes(Buffer.from(params.receivePubkeyBytes))
+        )
+      );
+    },
+    params.signTransaction
+  );
+}
+
+export async function shieldedTransferToVault(params: {
+  sourcePublicKey: string;
+  signTransaction: (xdr: string) => Promise<string>;
+  nullifierHexes: string[];
+  newCommitmentHexes: string[];
   merkleRootHex: string;
   publicInputs: Uint8Array;
   proofBytes: Uint8Array;
-  epkBytes?: Uint8Array;
-  encryptedNoteBytes?: Uint8Array;
+  epkBytes: Uint8Array[];
+  encryptedNoteBytes: Uint8Array[];
 }): Promise<string> {
-  const epk = params.epkBytes ?? new Uint8Array(32);
-  const encrypted = params.encryptedNoteBytes ?? new Uint8Array();
+  const padHex = (hexes: string[]) => {
+    const out = [...hexes];
+    while (out.length < 4) out.push("0x0");
+    return out.slice(0, 4);
+  };
+  const nullifiers = padHex(params.nullifierHexes);
+  const commitments = padHex(params.newCommitmentHexes);
+  const zero32 = new Uint8Array(32);
+  const dummyEnc = new Uint8Array([0]);
+
+  const epks = [...params.epkBytes];
+  const encs = [...params.encryptedNoteBytes];
+  while (epks.length < 4) epks.push(zero32);
+  while (encs.length < 4) encs.push(dummyEnc);
+
+  if (encs[0]!.length === 0) {
+    throw new Error("Encrypted note payload required for first output");
+  }
+  for (let i = 0; i < 4; i++) {
+    if (commitments[i] !== "0x0" && normalizeHex(commitments[i]!) !== "0x" + "0".repeat(64)) {
+      if (encs[i]!.length === 0) {
+        throw new Error(`Encrypted note required for output ${i}`);
+      }
+    }
+  }
+
   const args = [
-    xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.nullifierHex))),
-    xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.newCommitmentHex))),
+    ...nullifiers.map((h) => xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(h)))),
+    ...commitments.map((h) => xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(h)))),
     xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.merkleRootHex))),
     xdr.ScVal.scvBytes(Buffer.from(params.publicInputs)),
     xdr.ScVal.scvBytes(Buffer.from(params.proofBytes)),
+    ...epks.flatMap((epk, i) => [
+      xdr.ScVal.scvBytes(Buffer.from(epk)),
+      xdr.ScVal.scvBytes(Buffer.from(encs[i]!)),
+    ]),
   ];
-  if (!VAULT_LEGACY_SEND) {
-    args.push(xdr.ScVal.scvBytes(Buffer.from(epk)));
-    args.push(xdr.ScVal.scvBytes(Buffer.from(encrypted)));
-  }
+
   return signAndSend(
     params.sourcePublicKey,
     async (source) => {
@@ -221,10 +251,17 @@ export async function shieldedSendToVault(params: {
       return new TransactionBuilder(source, {
         fee: "1000000",
         networkPassphrase: networkPassphrase(),
-      }).addOperation(contract.call("shielded_send", ...args));
+      }).addOperation(contract.call("shielded_transfer", ...args));
     },
     params.signTransaction
   );
+}
+
+/** @deprecated use shieldedTransferToVault */
+export const shieldedSendToVault = shieldedTransferToVault;
+
+function normalizeHex(hex: string): string {
+  return (hex.startsWith("0x") ? hex : `0x${hex}`).toLowerCase();
 }
 
 export async function withdrawFromVault(params: {

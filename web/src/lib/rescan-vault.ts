@@ -1,4 +1,4 @@
-import { computeNullifier } from "./commitment-client";
+import { computeCommitmentsBatch, computeNullifier } from "./commitment-client";
 import { hexEquals } from "./bytes";
 import { createNote } from "./note";
 import type { Note, StoredNoteVault } from "./note-types";
@@ -10,32 +10,8 @@ import {
 } from "./vault-events-client";
 import type { VaultDepositEvent } from "./vault-events";
 
-const DEFAULT_MAX_DERIVATION_SCAN = 256;
+const DEFAULT_MAX_DERIVATION_SCAN = 1024;
 const BATCH_SIZE = 16;
-
-async function computeCommitmentsBatch(
-  items: Array<{
-    id: string;
-    value: string;
-    secret: string;
-    nullifierSecret: string;
-  }>
-): Promise<Record<string, string>> {
-  if (items.length === 0) return {};
-  const res = await fetch("/api/commitment-batch", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items }),
-  });
-  const data = (await res.json()) as {
-    commitments?: Record<string, string>;
-    error?: string;
-  };
-  if (!res.ok || !data.commitments) {
-    throw new Error(data.error ?? "batch commitment failed");
-  }
-  return data.commitments;
-}
 
 type DeriveFn = (index: number) => { secret: string; nullifierSecret: string };
 

@@ -1,80 +1,90 @@
-"use client";
-
-import { useEffect, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { signTransactionXdr } from "@/lib/wallet";
 import { createNote } from "@/lib/note";
 import { randomField } from "@/lib/field";
 import { encryptNoteForRecipient } from "@/lib/ecdh-delivery";
 import { deriveAndAllocateNoteSecrets } from "@/lib/note-store";
 import { resolveNoteSecretsFromVault } from "@/lib/note-secrets";
-import {
-  buildPaymentEnvelope,
-  downloadPaymentEnvelope,
-} from "@/lib/payment-envelope";
+import { proveWitness } from "@/lib/prove-client";
+import type { ProvePhase } from "@/lib/prover-client";
+import { ProveProgress } from "@/components/ProveProgress";
+import { buildTransferWitness, MAX_ACTION_SLOTS } from "@/lib/action-witness";
 import { proofBytesFromHex } from "@/lib/proof";
-import {
-  isZk1Address,
-  parseZk1Address,
-} from "@/lib/shielded-keys";
-import { encodePublicInputs, shieldedSendToVault } from "@/lib/stellar";
+import { isZk1Address } from "@/lib/shielded-keys";
+import { resolveReceivePubkey } from "@/lib/shielded-registry";
+import { encodePublicInputs, shieldedTransferToVault } from "@/lib/stellar";
 import { formatError } from "@/lib/format-error";
 import { upsertChainCommitment } from "@/lib/vault-events";
 import { persistVaultState, useWalletStore } from "@/store/useWalletStore";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
+import { TxLink } from "@/components/TxLink";
 
 export function SendPanel() {
   const { publicKey, notes, chainCommitments, refreshNotes } = useWalletStore();
   const { unlocked, unlock } = usePasskeyStore();
-  const [noteId, setNoteId] = useState("");
-  const [recipient, setRecipient] = useState("");
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [sendAmountXlm, setSendAmountXlm] = useState("");
+  const [recipientOverride, setRecipientOverride] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [provePhase, setProvePhase] = useState<ProvePhase | null>(null);
+  const [proveDetail, setProveDetail] = useState<string | null>(null);
+  const [status, setStatus] = useState<ReactNode>(null);
   const [error, setError] = useState<string | null>(null);
+  const proveAbortRef = useRef<AbortController | null>(null);
+
+  function cancelProve() {
+    proveAbortRef.current?.abort();
+    proveAbortRef.current = null;
+    setLoading(false);
+    setProvePhase(null);
+    setProveDetail(null);
+    setStatus(null);
+    setError("Proof cancelled");
+  }
 
   const unspent = notes.filter((n) => n.status === "unspent");
-  const recipientTrimmed = recipient.trim();
+  const recipientTrimmed = (recipientOverride ?? publicKey ?? "").trim();
   const sendToSelf = Boolean(
     publicKey && recipientTrimmed && publicKey === recipientTrimmed
   );
-  const zk1Recipient = isZk1Address(recipientTrimmed);
-  const parsedZk1 = zk1Recipient ? parseZk1Address(recipientTrimmed) : null;
 
-  useEffect(() => {
-    if (publicKey && !recipient) setRecipient(publicKey);
-  }, [publicKey, recipient]);
+  function toggleNote(id: string) {
+    setSelectedIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= MAX_ACTION_SLOTS) return prev;
+      return [...prev, id];
+    });
+  }
 
   async function handleSend() {
     if (!publicKey) {
       setError("Connect wallet first");
       return;
     }
-    const note = unspent.find((n) => n.id === noteId);
-    if (!note) {
-      setError("Select a note to spend");
+    const selected = selectedIds
+      .map((id) => unspent.find((n) => n.id === id))
+      .filter(Boolean);
+    if (selected.length === 0) {
+      setError("Select at least one note (up to 4)");
       return;
     }
-    if (!recipientTrimmed.startsWith("G") && !zk1Recipient) {
-      setError("Enter zk1… shielded address or Stellar G… (self)");
-      return;
-    }
-    if (recipientTrimmed.startsWith("G") && recipientTrimmed.length !== 56) {
-      setError("Stellar address must be 56 characters (G…)");
-      return;
-    }
-    if (zk1Recipient && !parsedZk1) {
-      setError("Invalid zk1 address");
+
+    if (!recipientTrimmed.startsWith("G") && !isZk1Address(recipientTrimmed)) {
+      setError("Enter zk1… shielded address or registered Stellar G…");
       return;
     }
 
     setLoading(true);
     setError(null);
+    setProvePhase(null);
+    setProveDetail(null);
     try {
       if (!unlocked) {
         setStatus("Unlocking passkey…");
         await unlock();
       }
+      const seed = usePasskeyStore.getState().rootSeed;
 
-      setStatus("Loading on-chain Merkle tree…");
       const chainRes = await fetch("/api/chain-commitments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -99,195 +109,260 @@ export function SendPanel() {
       }
       const chain = chainData.commitments;
 
-      setStatus("Generating ZK witness…");
-      const spendSecrets = await resolveNoteSecretsFromVault(note);
+      const noteTotal = selected.reduce((a, n) => a + n!.value, 0n);
+      let payeeAmount = noteTotal;
+      const trimmed = sendAmountXlm.trim();
+      if (trimmed) {
+        const xlm = Number(trimmed);
+        if (!Number.isFinite(xlm) || xlm <= 0) throw new Error("Invalid send amount");
+        payeeAmount = BigInt(Math.round(xlm * 1e7));
+        if (payeeAmount <= 0n || payeeAmount > noteTotal) {
+          throw new Error("Send amount must be positive and not exceed selected notes");
+        }
+      }
+      const changeAmount = noteTotal - payeeAmount;
+      if (selected.length > 1 && changeAmount <= 0n) {
+        throw new Error("Multi-note send requires change — send less than the total");
+      }
 
-      let newSecret: string;
-      let newNullifierSecret: string;
-      let newDerivationIndex: number | undefined;
+      setStatus("Resolving recipient shielded key…");
+      const receivePubkey = await resolveReceivePubkey({
+        recipient: recipientTrimmed,
+        readerPublicKey: publicKey,
+        selfPublicKey: publicKey,
+        selfRootSeed: seed,
+      });
 
+      setStatus("Building action witness…");
+      const inputNotes = await Promise.all(
+        selected.map(async (note) => {
+          const secrets = await resolveNoteSecretsFromVault(note!);
+          return {
+            value: note!.value.toString(),
+            secret: secrets.secret,
+            nullifierSecret: secrets.nullifierSecret,
+            leafIndex: note!.leafIndex,
+            commitment: note!.commitment,
+          };
+        })
+      );
+
+      let payeeSecret: string;
+      let payeeNullifierSecret: string;
       if (sendToSelf) {
-        const derived = await deriveAndAllocateNoteSecrets(publicKey!);
-        newSecret = derived.secret;
-        newNullifierSecret = derived.nullifierSecret;
-        newDerivationIndex = derived.derivationIndex;
+        const derived = await deriveAndAllocateNoteSecrets(publicKey);
+        payeeSecret = derived.secret;
+        payeeNullifierSecret = derived.nullifierSecret;
       } else {
-        newSecret = randomField();
-        newNullifierSecret = randomField();
+        payeeSecret = randomField();
+        payeeNullifierSecret = randomField();
       }
 
-      const proveRes = await fetch("/api/prove-spend", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          mode: "shielded_send",
-          value: note.value.toString(),
-          secret: spendSecrets.secret,
-          nullifierSecret: spendSecrets.nullifierSecret,
-          leafIndex: note.leafIndex,
-          leafCount: chainData.leafCount ?? chain.length,
-          onChainMerkleRoot: chainData.merkleRoot ?? undefined,
-          commitments: chain,
-          noteCommitment: note.commitment,
-          treeState: chainData.treeState ?? undefined,
-          newSecret,
-          newNullifierSecret,
-        }),
-      });
-      const prove = (await proveRes.json()) as {
-        error?: string;
-        merkleRoot?: string;
-        nullifier?: string;
-        newCommitment?: string;
-        publicInputs?: Record<string, string>;
-        proofHex?: string | null;
-        proofReady?: boolean;
-      };
-      if (!proveRes.ok || !prove.merkleRoot || !prove.publicInputs) {
-        throw new Error(prove.error ?? "Prove API failed");
-      }
+      const outputs: Array<{ value: string; secret: string; nullifierSecret: string }> = [
+        {
+          value: payeeAmount.toString(),
+          secret: payeeSecret,
+          nullifierSecret: payeeNullifierSecret,
+        },
+      ];
 
-      const leafIndex = chainData.leafCount ?? chain.length;
-      let epkBytes: Uint8Array | undefined;
-      let encryptedNoteBytes: Uint8Array | undefined;
-
-      if (parsedZk1) {
-        const enc = encryptNoteForRecipient(parsedZk1.publicKey, {
-          value: note.value.toString(),
-          secret: newSecret,
-          nullifierSecret: newNullifierSecret,
-          commitment: prove.newCommitment!,
-          leafIndex,
+      let changeDerived: Awaited<ReturnType<typeof deriveAndAllocateNoteSecrets>> | null = null;
+      if (changeAmount > 0n) {
+        changeDerived = await deriveAndAllocateNoteSecrets(publicKey);
+        outputs.push({
+          value: changeAmount.toString(),
+          secret: changeDerived.secret,
+          nullifierSecret: changeDerived.nullifierSecret,
         });
-        epkBytes = enc.epk;
-        encryptedNoteBytes = enc.encrypted;
       }
 
-      setStatus("Submitting shielded send…");
-      const publicInputs = encodePublicInputs({
-        merkleRootHex: prove.merkleRoot,
-        nullifierHex: prove.nullifier!,
-        newCommitmentHex: prove.newCommitment!,
-        publicAmount: prove.publicInputs.public_amount,
-        mode: prove.publicInputs.mode,
+      const built = await buildTransferWitness({
+        inputs: inputNotes,
+        outputs,
+        leafCount: chainData.leafCount ?? chain.length,
+        onChainMerkleRoot: chainData.merkleRoot ?? undefined,
+        commitments: chain,
+        treeState: chainData.treeState ?? undefined,
       });
 
-      const txHash = await shieldedSendToVault({
+      setStatus("Generating ZK proof…");
+      proveAbortRef.current = new AbortController();
+      const prove = await proveWitness(
+        built.witness,
+        {},
+        (phase, detail) => {
+          setProvePhase(phase);
+          setProveDetail(detail ?? null);
+        },
+        { signal: proveAbortRef.current.signal }
+      );
+      proveAbortRef.current = null;
+
+      const leafBase = chainData.leafCount ?? chain.length;
+      const encPayee = encryptNoteForRecipient(receivePubkey, {
+        value: payeeAmount.toString(),
+        secret: payeeSecret,
+        nullifierSecret: payeeNullifierSecret,
+        commitment: built.newCommitmentHexes[0]!,
+        leafIndex: leafBase,
+      });
+
+      const epks = [encPayee.epk];
+      const encs = [encPayee.encrypted];
+
+      if (changeAmount > 0n && changeDerived) {
+        const selfReceive = await resolveReceivePubkey({
+          recipient: publicKey,
+          readerPublicKey: publicKey,
+          selfPublicKey: publicKey,
+          selfRootSeed: seed,
+        });
+        const encChange = encryptNoteForRecipient(selfReceive, {
+          value: changeAmount.toString(),
+          secret: changeDerived.secret,
+          nullifierSecret: changeDerived.nullifierSecret,
+          commitment: built.newCommitmentHexes[1]!,
+          leafIndex: leafBase + 1,
+        });
+        epks.push(encChange.epk);
+        encs.push(encChange.encrypted);
+      }
+
+      setStatus("Submitting shielded transfer…");
+      const publicInputs = encodePublicInputs({
+        merkleRootHex: prove.merkleRoot ?? built.merkleRootHex,
+        nullifierHexes: prove.nullifierHexes,
+        newCommitmentHexes: built.newCommitmentHexes,
+        publicAmount: "0",
+      });
+
+      const txHash = await shieldedTransferToVault({
         sourcePublicKey: publicKey,
-        nullifierHex: prove.nullifier!,
-        newCommitmentHex: prove.newCommitment!,
-        merkleRootHex: prove.merkleRoot,
+        nullifierHexes: built.nullifierHexes,
+        newCommitmentHexes: built.newCommitmentHexes,
+        merkleRootHex: prove.merkleRoot ?? built.merkleRootHex,
         publicInputs,
         proofBytes: proofBytesFromHex(prove.proofHex),
-        epkBytes,
-        encryptedNoteBytes,
+        epkBytes: epks,
+        encryptedNoteBytes: encs,
         signTransaction: async (xdr) => signTransactionXdr(xdr, publicKey),
       });
 
-      const updatedNotes = notes.map((n) =>
-        n.id === note.id ? { ...n, status: "spent" as const } : n
+      const spentIds = new Set(selectedIds);
+      let updatedNotes = notes.map((n) =>
+        spentIds.has(n.id) ? { ...n, status: "spent" as const } : n
       );
-      const updatedChain = upsertChainCommitment(
-        chain,
-        leafIndex,
-        prove.newCommitment!
-      );
+      let updatedChain = chain;
+      built.newCommitmentHexes.forEach((nc, i) => {
+        if (nc !== "0x0") {
+          updatedChain = upsertChainCommitment(updatedChain, leafBase + i, nc);
+        }
+      });
 
-      if (sendToSelf) {
-        const recipientNote = await createNote({
-          valueStroops: note.value,
-          ownerPubkey: publicKey,
-          secret: newSecret,
-          nullifierSecret: newNullifierSecret,
-          commitmentHex: prove.newCommitment!,
-          leafIndex,
-          derivationIndex: newDerivationIndex,
-        });
-        updatedNotes.push(recipientNote);
+      if (sendToSelf && payeeAmount > 0n) {
+        const derived = await deriveAndAllocateNoteSecrets(publicKey);
+        updatedNotes.push(
+          await createNote({
+            valueStroops: payeeAmount,
+            ownerPubkey: publicKey,
+            secret: payeeSecret,
+            nullifierSecret: payeeNullifierSecret,
+            commitmentHex: built.newCommitmentHexes[0]!,
+            leafIndex: leafBase,
+            derivationIndex: derived.derivationIndex,
+          })
+        );
+      }
+
+      if (changeAmount > 0n && changeDerived) {
+        updatedNotes.push(
+          await createNote({
+            valueStroops: changeAmount,
+            ownerPubkey: publicKey,
+            secret: changeDerived.secret,
+            nullifierSecret: changeDerived.nullifierSecret,
+            commitmentHex: built.newCommitmentHexes[1]!,
+            leafIndex: leafBase + (payeeAmount < noteTotal ? 1 : 0),
+            derivationIndex: changeDerived.derivationIndex,
+          })
+        );
       }
 
       await persistVaultState(updatedNotes, updatedChain);
       await refreshNotes();
 
-      if (parsedZk1) {
-        setStatus(
-          `Sent to zk1 address on-chain (encrypted). Tx: ${txHash.slice(0, 12)}…`
-        );
-      } else if (!sendToSelf) {
-        downloadPaymentEnvelope(
-          buildPaymentEnvelope({
-            recipient: recipientTrimmed,
-            sender: publicKey,
-            valueStroops: note.value,
-            secret: newSecret,
-            nullifierSecret: newNullifierSecret,
-            commitment: prove.newCommitment!,
-            leafIndex,
-            txHash,
-          })
-        );
-        setStatus(
-          `Sent to G… address. Payment file downloaded. Tx: ${txHash.slice(0, 12)}…`
-        );
-      } else {
-        setStatus(`Sent. Tx: ${txHash.slice(0, 12)}…`);
-      }
+      setStatus(
+        <>
+          Sent {Number(payeeAmount) / 1e7} XLM
+          {changeAmount > 0n ? ` (change ${Number(changeAmount) / 1e7} XLM)` : ""}. Tx:{" "}
+          <TxLink txHash={txHash} />
+        </>
+      );
     } catch (err) {
+      if (err instanceof DOMException && err.name === "AbortError") {
+        setError("Proof cancelled");
+        setStatus(null);
+        return;
+      }
       setError(formatError(err) || "Send failed");
       setStatus(null);
     } finally {
       setLoading(false);
+      setProvePhase(null);
+      setProveDetail(null);
     }
   }
 
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
       <h2 className="mb-4 text-lg font-medium">Shielded send</h2>
-      <label className="mb-2 block text-sm text-zinc-300">Note to spend</label>
-      <select
-        value={noteId}
-        onChange={(e) => setNoteId(e.target.value)}
-        className="mb-4 w-full max-w-md rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm"
-      >
-        <option value="">Select…</option>
+      <p className="mb-3 text-xs text-zinc-400">
+        Action model: select up to {MAX_ACTION_SLOTS} notes, one ZK proof (payee + optional change).
+      </p>
+      <label className="mb-2 block text-sm text-zinc-300">Notes to spend</label>
+      <ul className="mb-4 max-h-48 space-y-2 overflow-y-auto">
         {unspent.map((n) => (
-          <option key={n.id} value={n.id}>
-            {Number(n.value) / 1e7} XLM — leaf {n.leafIndex}
-            {n.derivationIndex !== undefined ? ` · #${n.derivationIndex}` : ""}
-          </option>
+          <li key={n.id}>
+            <label className="flex cursor-pointer items-center gap-2 rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm">
+              <input
+                type="checkbox"
+                checked={selectedIds.includes(n.id)}
+                onChange={() => toggleNote(n.id)}
+              />
+              {Number(n.value) / 1e7} XLM — leaf {n.leafIndex}
+            </label>
+          </li>
         ))}
-      </select>
+      </ul>
       <label className="mb-2 block text-sm text-zinc-300">
-        Recipient (zk1… preferred, or G… for self)
+        Amount to send (XLM, empty = full total)
       </label>
       <input
-        value={recipient}
-        onChange={(e) => setRecipient(e.target.value)}
+        type="text"
+        inputMode="decimal"
+        value={sendAmountXlm}
+        onChange={(e) => setSendAmountXlm(e.target.value)}
+        placeholder="e.g. 0.15"
+        className="mb-4 w-full max-w-md rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm"
+      />
+      <label className="mb-2 block text-sm text-zinc-300">Recipient (zk1… or G…)</label>
+      <input
+        value={recipientOverride ?? publicKey ?? ""}
+        onChange={(e) => setRecipientOverride(e.target.value)}
         placeholder="zk1:testnet:… or G…"
         className="mb-4 w-full max-w-md rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm font-mono"
       />
-      {publicKey ? (
-        <button
-          type="button"
-          onClick={() => setRecipient(publicKey)}
-          className="mb-4 text-xs text-violet-300 hover:underline"
-        >
-          Use my address (self-send)
-        </button>
-      ) : null}
       <button
         type="button"
         onClick={() => void handleSend()}
         disabled={loading || unspent.length === 0}
         className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-50"
       >
-        {loading ? "Processing…" : "Shielded send"}
+        {loading ? "Processing…" : "Shielded transfer"}
       </button>
       {status ? <p className="mt-4 text-sm text-emerald-300">{status}</p> : null}
+      <ProveProgress phase={provePhase} detail={proveDetail} onCancel={cancelProve} />
       {error ? <p className="mt-4 text-sm text-red-300">{error}</p> : null}
-      <p className="mt-4 text-xs text-zinc-500">
-        zk1: on-chain encrypted delivery. G… (not self): payment file fallback.
-      </p>
     </section>
   );
 }

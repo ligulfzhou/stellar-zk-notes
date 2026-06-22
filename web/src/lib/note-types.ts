@@ -5,7 +5,7 @@ export type NoteStatus = "unspent" | "spent";
 export interface Note {
   id: string;
   value: bigint;
-  /** Random secret for payment-imported notes; derived notes recompute from passkey. */
+  /** Stored secrets for ECDH-received notes; derived notes recompute from passkey. */
   secret: string;
   nullifierSecret: string;
   /** When set, secrets are re-derived from passkey root + this index. */

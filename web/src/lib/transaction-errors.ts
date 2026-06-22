@@ -60,6 +60,13 @@ export function formatTransactionResult(errorResult: xdr.TransactionResult): str
   const code = result.switch();
   const label = switchName(code);
 
+  if (label === "txBadAuth") {
+    return (
+      "txBadAuth — invalid or missing signature. In Freighter, switch to Testnet, " +
+      "select the same account shown in the app header, reconnect, and approve the signing prompt."
+    );
+  }
+
   if (label !== "txFailed") {
     return label;
   }

@@ -8,6 +8,7 @@ import { NotesPanel } from "@/components/NotesPanel";
 import { SendPanel } from "@/components/SendPanel";
 import { WithdrawPanel } from "@/components/WithdrawPanel";
 import { PasskeyUnlockBanner } from "@/components/PasskeyUnlockBanner";
+import { ZkModeBadge } from "@/components/ZkModeBadge";
 import { useWalletStore } from "@/store/useWalletStore";
 import { initWalletsKit } from "@/lib/wallet";
 
@@ -37,7 +38,10 @@ export function WalletApp() {
             </p>
             <h1 className="text-xl font-semibold">zk-notes</h1>
           </div>
-          <ConnectButton />
+          <div className="flex items-center gap-3">
+            <ZkModeBadge />
+            <ConnectButton />
+          </div>
         </div>
       </header>
 

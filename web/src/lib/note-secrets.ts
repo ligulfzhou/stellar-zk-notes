@@ -2,14 +2,14 @@ import type { Note } from "./note-types";
 import { deriveNoteSecretsFromSeed } from "./root-seed";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
 
-/** Resolve spend secrets from passkey root or stored payment-import values. */
+/** Resolve spend secrets from passkey root or ECDH-received note secrets. */
 export function resolveNoteSecrets(
   note: Note,
   rootSeed: Uint8Array | null
 ): {
   secret: string;
   nullifierSecret: string;
-  source: "derived" | "imported";
+  source: "derived" | "received";
 } {
   if (note.derivationIndex !== undefined) {
     if (!rootSeed) {
@@ -21,7 +21,7 @@ export function resolveNoteSecrets(
   return {
     secret: note.secret,
     nullifierSecret: note.nullifierSecret,
-    source: "imported",
+    source: "received",
   };
 }
 

@@ -5,7 +5,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
 echo "==> zk-notes demo (scaffold)"
 echo "1. Circuit tests"
-(cd "$ROOT/circuits/spend_note" && nargo test)
+(cd "$ROOT/circuits/transfer_actions" && nargo test)
 
 echo "2. Contract tests"
 (cd "$ROOT/contracts" && cargo test)

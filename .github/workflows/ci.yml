@@ -1,0 +1,76 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  circuits:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Noir
+        run: |
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+          noirup -v 1.0.0-beta.9
+      - name: nargo test (transfer_actions)
+        run: cd circuits/transfer_actions && nargo test
+      - name: nargo test (note_hash)
+        run: cd circuits/note_hash && nargo test
+
+  bb-prove:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Noir + bb
+        run: |
+          curl -L https://raw.githubusercontent.com/noir-lang/noirup/main/install | bash
+          echo "$HOME/.nargo/bin" >> "$GITHUB_PATH"
+          noirup -v 1.0.0-beta.9
+          curl -L https://raw.githubusercontent.com/AztecProtocol/aztec-packages/master/barretenberg/bbup/install | bash
+          echo "$HOME/.bb/bin" >> "$GITHUB_PATH"
+          bbup -v 0.87.0
+      - name: Compile transfer_actions
+        run: cd circuits/transfer_actions && nargo compile
+      - name: Smoke prove (UltraHonk keccak)
+        run: |
+          cd circuits/transfer_actions
+          nargo execute
+          mkdir -p ../../artifacts/transfer_actions
+          bb prove -b target/transfer_actions.json -w target/transfer_actions.gz \
+            -o ../../artifacts/transfer_actions \
+            --scheme ultra_honk --oracle_hash keccak --output_format bytes_and_fields
+          PROOF_SIZE=$(wc -c < ../../artifacts/transfer_actions/proof | tr -d ' ')
+          test "$PROOF_SIZE" -eq 14592
+
+  contracts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: cargo test (vault)
+        run: cd contracts && cargo test -p vault
+
+  web:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm run build
+        env:
+          NEXT_PUBLIC_VAULT_CONTRACT_ID: CDICJZDBJLGFDGRNJRKLQDFFPBZOUSMXO76ETBYLQSOGYVGWKNKLVSQP
+          NEXT_PUBLIC_VAULT_LEGACY_SEND: "false"
+          ZK_MOCK_PROOF: "true"
+          NEXT_PUBLIC_ZK_MOCK_PROOF: "true"
