@@ -45,6 +45,8 @@ next-env.d.ts
 
 # local proxy (copy from scripts/proxy.env.example)
 scripts/proxy.env
+scripts/relayer/node_modules/
+scripts/relayer/package-lock.json
 
 # third-party (submodule; clone via scripts/setup_ultrahonk.sh)
 /third_party/ultrahonk_soroban_contract/

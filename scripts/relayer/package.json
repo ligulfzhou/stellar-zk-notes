@@ -1,0 +1,15 @@
+{
+  "name": "zk-notes-relayer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "server": "tsx server.ts"
+  },
+  "dependencies": {
+    "@stellar/stellar-sdk": "^15.1.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.4",
+    "typescript": "^5"
+  }
+}
