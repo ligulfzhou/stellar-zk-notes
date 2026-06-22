@@ -1,33 +1,56 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { signTransactionXdr } from "@/lib/wallet";
 import { PasskeySetupModal } from "@/components/PasskeySetupModal";
 import { createNote } from "@/lib/note";
 import { deriveAndAllocateNoteSecrets, loadVault } from "@/lib/note-store";
 import { hasPasskey } from "@/lib/note-types";
-import { computeCommitment } from "@/lib/commitment-client";
-import { stroopsFromXlm } from "@/lib/field";
-import { depositToVault, ensureAccountOnNetwork } from "@/lib/stellar";
+import {
+  computeCommitmentV2,
+  depositSecretToHex,
+} from "@/lib/commitment-v2";
+import { deriveDepositSecretFromSeed } from "@/lib/root-seed";
+import { joinPoolOnVault, getVaultLeafCount } from "@/lib/stellar";
 import { stellarExpertTxUrl } from "@/lib/explorer";
 import { formatError } from "@/lib/format-error";
-import { upsertChainCommitment } from "@/lib/vault-events";
+import { MIN_POOL_SIZE_TESTNET, POOLS } from "@/lib/pool-config";
+import { PrivacyBadge } from "@/components/PrivacyBadge";
+import { upsertPoolChainCommitment } from "@/lib/vault-events";
 import { persistVaultState, useWalletStore } from "@/store/useWalletStore";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
 
-export function DepositPanel() {
-  const { publicKey, notes, chainCommitments, refreshNotes } = useWalletStore();
-  const { unlocked, unlock, registerPrimary } = usePasskeyStore();
-  const [amount, setAmount] = useState("1");
+export function JoinPanel() {
+  const { publicKey, notes, poolChainCommitments, refreshNotes } = useWalletStore();
+  const { unlocked, unlock, registerPrimary, rootSeed, requireSeed } = usePasskeyStore();
+  const [poolId, setPoolId] = useState(0);
+  const [poolLeafCount, setPoolLeafCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(false);
   const [status, setStatus] = useState<string | null>(null);
   const [success, setSuccess] = useState<{
     leafIndex: number;
     derivationIndex: number;
     txHash: string;
+    poolId: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showSetup, setShowSetup] = useState(false);
+
+  const selectedPool = POOLS.find((p) => p.id === poolId) ?? POOLS[0]!;
+
+  useEffect(() => {
+    void (async () => {
+      if (!publicKey) {
+        setPoolLeafCount(null);
+        return;
+      }
+      try {
+        setPoolLeafCount(await getVaultLeafCount(publicKey, poolId));
+      } catch {
+        setPoolLeafCount(null);
+      }
+    })();
+  }, [publicKey, poolId, success?.txHash]);
 
   async function ensurePasskeyReady(): Promise<void> {
     if (!publicKey) {
@@ -43,7 +66,7 @@ export function DepositPanel() {
     }
   }
 
-  async function runDeposit() {
+  async function runJoin() {
     if (!publicKey) {
       setError("Connect wallet first");
       return;
@@ -55,58 +78,61 @@ export function DepositPanel() {
     setStatus("Deriving note secrets from passkey…");
 
     try {
-      setStatus("Checking account on testnet…");
-      await ensureAccountOnNetwork(publicKey);
-
-      setStatus("Deriving note secrets from passkey…");
       await ensurePasskeyReady();
-
-      const valueStroops = stroopsFromXlm(amount);
-      if (valueStroops <= 0n) {
-        throw new Error("Enter a positive amount");
-      }
 
       const derived = await deriveAndAllocateNoteSecrets(publicKey);
       const { secret, nullifierSecret, derivationIndex } = derived;
+      const seed = rootSeed ?? requireSeed();
+      const depositSecret = deriveDepositSecretFromSeed(seed, derivationIndex);
+      const valueStroops = selectedPool.stroops;
 
-      setStatus("Computing commitment (browser)…");
-      const commitmentHex = await computeCommitment(
-        valueStroops.toString(),
+      setStatus("Computing commitment v2 (browser)…");
+      const commitmentHex = await computeCommitmentV2({
+        valueStroops,
         secret,
-        nullifierSecret
-      );
+        nullifierSecret,
+        depositSecret,
+        poolId,
+      });
 
-      setStatus("Signing deposit transaction…");
-      const { txHash, leafIndex } = await depositToVault({
+      setStatus("Signing join transaction…");
+      const { txHash, leafIndex } = await joinPoolOnVault({
         sourcePublicKey: publicKey,
-        amountStroops: valueStroops,
-        commitmentHex: commitmentHex,
+        poolId,
+        commitmentHex,
         signTransaction: async (xdr) => signTransactionXdr(xdr, publicKey),
       });
 
       const note = await createNote({
         valueStroops,
+        poolId,
         ownerPubkey: publicKey,
         secret,
         nullifierSecret,
-        commitmentHex: commitmentHex,
+        depositSecretHex: depositSecretToHex(depositSecret),
+        commitmentHex,
         leafIndex,
         derivationIndex,
       });
 
       await persistVaultState(
         [...notes, note],
-        upsertChainCommitment(chainCommitments, leafIndex, commitmentHex)
+        upsertPoolChainCommitment(
+          poolChainCommitments,
+          poolId,
+          leafIndex,
+          commitmentHex
+        )
       );
       await refreshNotes();
 
       setStatus(null);
-      setSuccess({ leafIndex, derivationIndex, txHash });
+      setSuccess({ leafIndex, derivationIndex, txHash, poolId });
     } catch (err) {
       if (err instanceof Error && err.message === "PASSKEY_SETUP") {
         setStatus(null);
       } else {
-        setError(formatError(err) || "Deposit failed");
+        setError(formatError(err) || "Join failed");
         setStatus(null);
         setSuccess(null);
       }
@@ -121,12 +147,19 @@ export function DepositPanel() {
     setError(null);
     try {
       await registerPrimary("Primary passkey");
-      await runDeposit();
+      await runJoin();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Passkey setup failed");
       setLoading(false);
     }
   }
+
+  const anonymityHint =
+    poolLeafCount === null
+      ? "—"
+      : poolLeafCount >= MIN_POOL_SIZE_TESTNET
+        ? `${poolLeafCount} notes in pool (spend enabled)`
+        : `${poolLeafCount} / ${MIN_POOL_SIZE_TESTNET} min for private spend`;
 
   return (
     <>
@@ -137,29 +170,46 @@ export function DepositPanel() {
         />
       ) : null}
       <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
-        <h2 className="mb-4 text-lg font-medium">Deposit to shielded note</h2>
+        <h2 className="mb-4 text-lg font-medium">Join shielded pool</h2>
         <p className="mb-4 text-sm text-zinc-400">
-          Note secrets are derived from your passkey (WebAuthn PRF). Only the commitment goes
-          on-chain. Create a passkey in Notes if you have not yet.
+          Fixed-denomination join — only pool id, commitment, and leaf index appear
+          on-chain. Note secrets come from your passkey (WebAuthn PRF).
         </p>
-        <label className="mb-2 block text-sm text-zinc-300">Amount (XLM)</label>
-        <input
-          type="text"
-          value={amount}
-          onChange={(e) => setAmount(e.target.value)}
-          className="mb-4 w-full max-w-xs rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm"
-        />
+        <div className="mb-4 flex flex-wrap items-center gap-3">
+          <PrivacyBadge poolLeafCount={poolLeafCount} poolLabel={selectedPool.label} />
+        </div>
+        <p className="mb-4 text-xs text-violet-300/90">
+          Pool anonymity set: {anonymityHint}
+        </p>
+        <label className="mb-2 block text-sm text-zinc-300">Denomination</label>
+        <div className="mb-4 flex flex-wrap gap-2">
+          {POOLS.map((pool) => (
+            <button
+              key={pool.id}
+              type="button"
+              onClick={() => setPoolId(pool.id)}
+              className={`rounded-lg px-3 py-2 text-sm ${
+                poolId === pool.id
+                  ? "bg-violet-600 text-white"
+                  : "border border-white/10 bg-black/30 text-zinc-300 hover:bg-white/5"
+              }`}
+            >
+              {pool.label}
+            </button>
+          ))}
+        </div>
         <button
           type="button"
-          onClick={() => void runDeposit()}
+          onClick={() => void runJoin()}
           disabled={loading}
           className="rounded-lg bg-violet-600 px-4 py-2 text-sm font-medium text-white hover:bg-violet-500 disabled:opacity-50"
         >
-          {loading ? "Processing…" : "Deposit"}
+          {loading ? "Processing…" : `Join ${selectedPool.label} pool`}
         </button>
         {success ? (
           <p className="mt-4 text-sm text-emerald-300">
-            Deposited (leaf {success.leafIndex}, passkey #{success.derivationIndex}). Tx:{" "}
+            Joined pool {success.poolId} (leaf {success.leafIndex}, passkey #
+            {success.derivationIndex}). Tx:{" "}
             <a
               href={stellarExpertTxUrl(success.txHash)}
               target="_blank"

@@ -3,20 +3,21 @@
 import { useEffect } from "react";
 import { ConnectButton } from "@/components/ConnectButton";
 import { DashboardPanel } from "@/components/DashboardPanel";
-import { DepositPanel } from "@/components/DepositPanel";
+import { JoinPanel } from "@/components/JoinPanel";
 import { NotesPanel } from "@/components/NotesPanel";
 import { SendPanel } from "@/components/SendPanel";
-import { WithdrawPanel } from "@/components/WithdrawPanel";
+import { ExitPanel } from "@/components/ExitPanel";
 import { PasskeyUnlockBanner } from "@/components/PasskeyUnlockBanner";
+import { DevPrivacyWarning } from "@/components/DevPrivacyWarning";
 import { ZkModeBadge } from "@/components/ZkModeBadge";
 import { useWalletStore } from "@/store/useWalletStore";
 import { initWalletsKit } from "@/lib/wallet";
 
 const tabs = [
   { id: "dashboard", label: "Dashboard" },
-  { id: "deposit", label: "Deposit" },
+  { id: "join", label: "Join pool" },
   { id: "send", label: "Send" },
-  { id: "withdraw", label: "Withdraw" },
+  { id: "exit", label: "Exit" },
   { id: "notes", label: "Notes" },
 ] as const;
 
@@ -53,6 +54,7 @@ export function WalletApp() {
         ) : null}
 
         <PasskeyUnlockBanner />
+        <DevPrivacyWarning />
 
         <nav className="mb-8 flex flex-wrap gap-2">
           {tabs.map((tab) => (
@@ -72,9 +74,9 @@ export function WalletApp() {
         </nav>
 
         {activeTab === "dashboard" && <DashboardPanel />}
-        {activeTab === "deposit" && <DepositPanel />}
+        {activeTab === "join" && <JoinPanel />}
         {activeTab === "send" && <SendPanel />}
-        {activeTab === "withdraw" && <WithdrawPanel />}
+        {activeTab === "exit" && <ExitPanel />}
         {activeTab === "notes" && <NotesPanel />}
       </main>
     </div>

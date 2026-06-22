@@ -26,7 +26,7 @@ export function PasskeyUnlockBanner() {
         <div>
           <p className="text-sm font-medium text-sky-200">Passkey locked</p>
           <p className="text-xs text-zinc-400">
-            Unlock to deposit, send, withdraw, or scan incoming notes.
+            Unlock to join pool, send, exit, or scan incoming notes.
             {platformOk === false
               ? " No platform authenticator detected — use a browser with Touch ID / Face ID."
               : null}

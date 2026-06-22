@@ -7,24 +7,26 @@ import {
 } from "@/lib/incoming-scanner";
 import { fetchVaultChainState } from "@/lib/vault-events-client";
 import { fetchPublicXlmBalance } from "@/lib/account-balance";
+import { POOLS } from "@/lib/pool-config";
+import { PrivacyBadge } from "@/components/PrivacyBadge";
 import { loadVault } from "@/lib/note-store";
 import { persistFullVault, useWalletStore } from "@/store/useWalletStore";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
 
 export function DashboardPanel() {
-  const { publicKey, notes, chainCommitments, shieldedBalance, refreshNotes } =
+  const { publicKey, notes, poolChainCommitments, shieldedBalance, refreshNotes } =
     useWalletStore();
   const { unlocked, unlock, rootSeed } = usePasskeyStore();
   const [chainLeafCount, setChainLeafCount] = useState<number | null>(null);
+  const [poolLeafCounts, setPoolLeafCounts] = useState<Array<number | null>>([]);
   const [publicBalance, setPublicBalance] = useState<string | null>(null);
   const [activity, setActivity] = useState<string[]>([]);
   const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
   const unspent = notes.filter((n) => n.status === "unspent").length;
+  const pool0Count = poolChainCommitments[0]?.length ?? 0;
   const inSync =
-    chainLeafCount === null
-      ? null
-      : chainCommitments.length === chainLeafCount;
+    chainLeafCount === null ? null : pool0Count === chainLeafCount;
 
   useEffect(() => {
     void (async () => {
@@ -42,6 +44,7 @@ export function DashboardPanel() {
       try {
         const state = await fetchVaultChainState({ reader: publicKey });
         setChainLeafCount(state.leafCount);
+        setPoolLeafCounts(state.poolLeafCounts ?? []);
         setActivity(
           state.events
             .slice(-8)
@@ -52,7 +55,7 @@ export function DashboardPanel() {
         setChainLeafCount(null);
       }
     })();
-  }, [publicKey, notes.length, chainCommitments.length]);
+  }, [publicKey, notes.length, pool0Count]);
 
   async function handleSync() {
     if (!publicKey) return;
@@ -76,11 +79,11 @@ export function DashboardPanel() {
       await persistFullVault({
         ...vault,
         notes: incoming.notes,
-        chainCommitments: incoming.chainCommitments,
+        poolChainCommitments: incoming.poolChainCommitments,
       });
       await refreshNotes();
       setSyncStatus(
-        `Synced: ${incoming.imported} encrypted note(s), ${incoming.chainCommitments.length} commitments`
+        `Synced: ${incoming.imported} encrypted note(s), pool-0 ${incoming.poolChainCommitments[0]?.length ?? 0} commitments`
       );
     } catch (err) {
       setSyncStatus(err instanceof Error ? err.message : "Sync failed");
@@ -95,6 +98,18 @@ export function DashboardPanel() {
       />
       <Card title="Shielded balance" value={`${formatStroops(shieldedBalance)} XLM`} />
       <Card title="Unspent notes" value={String(unspent)} />
+      <div className="rounded-2xl border border-white/10 bg-white/5 p-5">
+        <p className="text-sm text-zinc-400">Pool privacy (pool 0)</p>
+        <div className="mt-3">
+          <PrivacyBadge
+            poolLeafCount={poolLeafCounts[0] ?? chainLeafCount}
+            poolLabel={POOLS[0]?.label}
+          />
+        </div>
+        <p className="mt-3 text-xs text-zinc-500">
+          Shielded receive via zk1 — no chain registration needed.
+        </p>
+      </div>
       <Card
         title="Chain sync"
         value={
@@ -102,7 +117,7 @@ export function DashboardPanel() {
             ? "—"
             : inSync
               ? "✓ in sync"
-              : `local ${chainCommitments.length} / chain ${chainLeafCount}`
+              : `local pool-0 ${pool0Count} / chain ${chainLeafCount}`
         }
       />
       <Panel title="Activity (recent)">
@@ -136,9 +151,9 @@ export function DashboardPanel() {
       </Panel>
       <Panel title="How it works">
         <ol className="list-decimal space-y-2 pl-5 text-sm text-zinc-300">
-          <li>Deposit → commitment on-chain, secrets from passkey PRF.</li>
-          <li>Send to zk1… or registered G… → ECDH-encrypted note on-chain.</li>
-          <li>Withdraw → ZK proof + public payout.</li>
+          <li>Join pool → private commitment on-chain (fixed 1/10/100 XLM denomination).</li>
+          <li>Send to zk1… or pasted X25519 key → ECDH-encrypted note on-chain.</li>
+          <li>Exit → ZK proof + relayer pays recipient off-chain of vault events.</li>
         </ol>
       </Panel>
     </section>

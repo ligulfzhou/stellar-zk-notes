@@ -83,7 +83,43 @@ stellar contract invoke \
 ```bash
 cp web/.env.local.example web/.env.local
 # Set NEXT_PUBLIC_VAULT_CONTRACT_ID=<VAULT_ID>
+# Phase C: NEXT_PUBLIC_PRIVACY_MODE=strict, NEXT_PUBLIC_RELAYER_URL, NEXT_PUBLIC_RELAYER_X25519_PUBLIC
 cd web && npm run dev
+```
+
+## Relayer (Phase C)
+
+Run a relayer on testnet to submit user-signed txs and pay exit recipients:
+
+```bash
+export RELAYER_SECRET=<funded-G-secret>
+export RELAYER_X25519_SECRET=<32-byte-hex>
+export VAULT_ID=<VAULT_CONTRACT_ID>
+export SOROBAN_RPC=https://soroban-rpc.testnet.stellar.gateway.fm
+
+# HTTP POST /submit { "xdr": "<signed>" } on :8787 + exit payout poller
+npx tsx scripts/relayer/server.ts
+```
+
+Wallet `NEXT_PUBLIC_PRIVACY_MODE=strict` routes signed XDR to `NEXT_PUBLIC_RELAYER_URL/submit`.
+Use `dev` mode only for local debugging (direct submit exposes wallet G…).
+
+One-shot exit payout (E2E):
+
+```bash
+npx tsx scripts/relayer/server.ts --once
+```
+
+Privacy audit:
+
+```bash
+npx tsx scripts/e2e/privacy-audit.ts --vault $VAULT_ID
+```
+
+Phase C E2E:
+
+```bash
+ZK_MOCK_PROOF=false ./scripts/e2e_testnet.sh --flow phase-c
 ```
 
 ### Current testnet deployment
@@ -115,9 +151,9 @@ Set `ZK_MOCK_PROOF=false` and `NEXT_PUBLIC_ZK_MOCK_PROOF=false` in `web/.env.loc
 ./scripts/prove_from_witness.sh /path/to/witness.json
 ```
 
-Submit `shielded_send` or `withdraw` with `public_inputs` from `Vault.build_public_inputs` and proof bytes from artifacts.
+Submit `shielded_transfer` or `exit_pool` with 384-byte `public_inputs` (pool_id + exit_hash) and proof bytes from `pool_actions` artifacts.
 
-### shielded_send (v2)
+### shielded_transfer (Phase C)
 
 ```bash
 stellar contract invoke --id <VAULT_ID> --network testnet --source <ACCOUNT> -- \

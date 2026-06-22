@@ -75,7 +75,7 @@ async function signAndSend(
   throw new Error("send failed: network busy");
 }
 
-export async function getVaultLeafCount(reader: string): Promise<number> {
+export async function getVaultLeafCount(reader: string, poolId = 0): Promise<number> {
   const server = rpcServer();
   const contract = new Contract(requireVaultId());
   const source = await loadAccount(reader);
@@ -83,7 +83,12 @@ export async function getVaultLeafCount(reader: string): Promise<number> {
     fee: "100",
     networkPassphrase: config.networkPassphrase,
   })
-    .addOperation(contract.call("leaf_count"))
+    .addOperation(
+      contract.call(
+        "pool_leaf_count",
+        nativeToScVal(poolId, { type: "u32" })
+      )
+    )
     .setTimeout(30)
     .build();
   const sim = await server.simulateTransaction(tx);
@@ -91,7 +96,7 @@ export async function getVaultLeafCount(reader: string): Promise<number> {
   return Number(scValToNative(sim.result.retval));
 }
 
-export async function getVaultMerkleRoot(reader: string): Promise<string> {
+export async function getVaultMerkleRoot(reader: string, poolId = 0): Promise<string> {
   const server = rpcServer();
   const contract = new Contract(requireVaultId());
   const source = await loadAccount(reader);
@@ -99,7 +104,9 @@ export async function getVaultMerkleRoot(reader: string): Promise<string> {
     fee: "100",
     networkPassphrase: config.networkPassphrase,
   })
-    .addOperation(contract.call("get_root"))
+    .addOperation(
+      contract.call("get_pool_root", nativeToScVal(poolId, { type: "u32" }))
+    )
     .setTimeout(30)
     .build();
   const sim = await server.simulateTransaction(tx);
@@ -110,13 +117,91 @@ export async function getVaultMerkleRoot(reader: string): Promise<string> {
   return "0x" + Buffer.from(bytes).toString("hex").padStart(64, "0");
 }
 
-async function waitLeafIncrease(before: number, reader: string): Promise<number> {
+async function waitLeafIncrease(
+  before: number,
+  reader: string,
+  poolId = 0
+): Promise<number> {
   for (let i = 0; i < 10; i++) {
-    const count = await getVaultLeafCount(reader);
+    const count = await getVaultLeafCount(reader, poolId);
     if (count > before) return count;
     await new Promise((r) => setTimeout(r, 2000));
   }
-  return getVaultLeafCount(reader);
+  return getVaultLeafCount(reader, poolId);
+}
+
+export async function joinPool(params: {
+  signer: Signer;
+  poolId: number;
+  commitmentHex: string;
+}): Promise<{ txHash: string; leafIndex: number }> {
+  const before = await getVaultLeafCount(params.signer.publicKey, params.poolId).catch(
+    () => 0
+  );
+  const txHash = await signAndSend(params.signer, (source) => {
+    const contract = new Contract(requireVaultId());
+    const from = new Address(params.signer.publicKey);
+    return new TransactionBuilder(source, {
+      fee: "1000000",
+      networkPassphrase: config.networkPassphrase,
+    }).addOperation(
+      contract.call(
+        "join_pool",
+        from.toScVal(),
+        nativeToScVal(params.poolId, { type: "u32" }),
+        xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.commitmentHex)))
+      )
+    );
+  });
+  const after = await waitLeafIncrease(
+    before,
+    params.signer.publicKey,
+    params.poolId
+  );
+  return { txHash, leafIndex: Math.max(0, after - 1) };
+}
+
+export async function exitPool(params: {
+  signer: Signer;
+  poolId: number;
+  recipient: string;
+  relayer: string;
+  relayerFeeStroops: number;
+  nullifierHexes: string[];
+  merkleRootHex: string;
+  publicInputs: Uint8Array;
+  proofBytes: Uint8Array;
+}): Promise<string> {
+  const padHex = (hexes: string[]) => {
+    const out = [...hexes];
+    while (out.length < 4) out.push("0x0");
+    return out.slice(0, 4);
+  };
+  const nullifiers = padHex(params.nullifierHexes);
+  const recipient = new Address(params.recipient);
+  const relayer = new Address(params.relayer);
+  return signAndSend(params.signer, (source) => {
+    const contract = new Contract(requireVaultId());
+    return new TransactionBuilder(source, {
+      fee: "1000000",
+      networkPassphrase: config.networkPassphrase,
+    }).addOperation(
+      contract.call(
+        "exit_pool",
+        nativeToScVal(params.poolId, { type: "u32" }),
+        recipient.toScVal(),
+        relayer.toScVal(),
+        xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(nullifiers[0]!))),
+        xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(nullifiers[1]!))),
+        xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(nullifiers[2]!))),
+        xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(nullifiers[3]!))),
+        xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.merkleRootHex))),
+        xdr.ScVal.scvBytes(Buffer.from(params.publicInputs)),
+        xdr.ScVal.scvBytes(Buffer.from(params.proofBytes)),
+        nativeToScVal(params.relayerFeeStroops, { type: "u32" })
+      )
+    );
+  });
 }
 
 export async function deposit(params: {
@@ -195,6 +280,7 @@ export async function registerShieldedKey(params: {
 
 export async function shieldedTransfer(params: {
   signer: Signer;
+  poolId?: number;
   nullifierHexes: string[];
   newCommitmentHexes: string[];
   merkleRootHex: string;
@@ -203,6 +289,7 @@ export async function shieldedTransfer(params: {
   epkBytes: Uint8Array[];
   encryptedNoteBytes: Uint8Array[];
 }): Promise<string> {
+  const poolId = params.poolId ?? 0;
   const padHex = (hexes: string[]) => {
     const out = [...hexes];
     while (out.length < 4) out.push("0x0");
@@ -219,6 +306,7 @@ export async function shieldedTransfer(params: {
   while (encs.length < 4) encs.push(dummyEnc);
 
   const args = [
+    nativeToScVal(poolId, { type: "u32" }),
     ...nullifiers.map((h) => xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(h)))),
     ...commitments.map((h) => xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(h)))),
     xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.merkleRootHex))),

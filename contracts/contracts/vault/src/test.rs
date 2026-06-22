@@ -2,7 +2,10 @@
 
 use super::*;
 use merkle::MerkleTree;
-use soroban_sdk::{contract, contractimpl, crypto::bn254::Bn254Fr, testutils::Address as _, token, Address, Bytes, BytesN, Env, U256};
+use pool::JOIN_AMOUNTS;
+use soroban_sdk::{contract, contractimpl, crypto::bn254::Bn254Fr, testutils::{Address as _, Events}, token, Address, Bytes, BytesN, Env, U256};
+
+const POOL_ID: u32 = 0;
 
 #[contract]
 struct MockVerifier;
@@ -22,7 +25,7 @@ impl RejectVerifier {
     }
 }
 
-fn setup_vault(env: &Env) -> (Address, VaultClient<'static>, Address) {
+fn setup_vault(env: &Env) -> (Address, VaultClient<'static>, Address, Address) {
     env.mock_all_auths();
     let admin = Address::generate(env);
     let token_contract = env.register_stellar_asset_contract_v2(admin.clone());
@@ -33,16 +36,16 @@ fn setup_vault(env: &Env) -> (Address, VaultClient<'static>, Address) {
     client.initialize(&admin, &token, &verifier_id);
 
     let sac = token::StellarAssetClient::new(env, &token);
-    sac.mint(&admin, &100_000_i128);
+    sac.mint(&admin, &1_000_000_000_i128);
 
-    (admin, client, token)
+    (admin, client, token, vault_id)
 }
 
 fn zero_bytes(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0u8; 32])
 }
 
-fn transfer_public_inputs(
+fn pool_public_inputs(
     env: &Env,
     client: &VaultClient,
     root: &BytesN<32>,
@@ -51,12 +54,14 @@ fn transfer_public_inputs(
 ) -> Bytes {
     let zero = zero_bytes(env);
     client.build_public_inputs(
+        &POOL_ID,
         root,
         nullifier,
         &zero,
         &zero,
         &zero,
         new_commitment,
+        &zero,
         &zero,
         &zero,
         &zero,
@@ -70,6 +75,14 @@ fn encrypted_note(env: &Env) -> Bytes {
 
 fn dummy_enc(env: &Env) -> Bytes {
     Bytes::from_array(env, &[0u8; 1])
+}
+
+fn seed_pool(env: &Env, client: &VaultClient, admin: &Address, count: u32) {
+    for i in 0..count {
+        let mut commitment = [0u8; 32];
+        commitment[0] = i as u8 + 1;
+        client.join_pool(admin, &POOL_ID, &BytesN::from_array(env, &commitment));
+    }
 }
 
 #[test]
@@ -87,35 +100,87 @@ fn merkle_insert_updates_root() {
 }
 
 #[test]
-fn deposit_increments_leaf_count() {
+fn pool_leaf_count_starts_at_zero() {
     let env = Env::default();
-    let (admin, client, _) = setup_vault(&env);
+    let (_, client, _, _) = setup_vault(&env);
+    assert_eq!(client.pool_leaf_count(&0), 0);
+    assert_eq!(client.pool_leaf_count(&1), 0);
+    assert_eq!(client.pool_leaf_count(&2), 0);
+}
+
+#[test]
+fn join_pool_increments_pool_leaf_count() {
+    let env = Env::default();
+    let (admin, client, _, _) = setup_vault(&env);
     let commitment = BytesN::from_array(&env, &[3u8; 32]);
 
-    client.deposit(&admin, &1_000_i128, &commitment);
+    client.join_pool(&admin, &POOL_ID, &commitment);
 
-    assert_eq!(client.leaf_count(), 1);
+    assert_eq!(client.pool_leaf_count(&POOL_ID), 1);
+}
+
+#[test]
+fn join_pool_transfers_fixed_amount() {
+    let env = Env::default();
+    let (admin, client, token, vault_addr) = setup_vault(&env);
+    let commitment = BytesN::from_array(&env, &[5u8; 32]);
+    let sac = token::StellarAssetClient::new(&env, &token);
+    let admin_before = sac.balance(&admin);
+    let vault_before = sac.balance(&vault_addr);
+
+    client.join_pool(&admin, &POOL_ID, &commitment);
+
+    assert_eq!(sac.balance(&admin), admin_before - 10_000_000);
+    assert_eq!(sac.balance(&vault_addr), vault_before + 10_000_000);
+    assert_eq!(client.pool_leaf_count(&POOL_ID), 1);
+}
+
+#[test]
+fn join_pool_emits_no_depositor() {
+    use soroban_sdk::{Map, Symbol, TryFromVal, Val};
+    use soroban_sdk::xdr::{ContractEventBody, ScVal};
+
+    let env = Env::default();
+    let (admin, client, _, vault_addr) = setup_vault(&env);
+    let commitment = BytesN::from_array(&env, &[6u8; 32]);
+
+    client.join_pool(&admin, &POOL_ID, &commitment);
+
+    let events = env.events().all().filter_by_contract(&vault_addr);
+    assert_eq!(events.events().len(), 1);
+    let body = &events.events()[0].body;
+    let data = match body {
+        ContractEventBody::V0(v0) => &v0.data,
+        _ => panic!("unexpected event body version"),
+    };
+    let val = Val::try_from_val(&env, &ScVal::try_from(data.clone()).unwrap()).unwrap();
+    let map = Map::<Symbol, Val>::try_from_val(&env, &val).unwrap();
+    assert!(map.get(Symbol::new(&env, "pool_id")).is_some());
+    assert!(map.get(Symbol::new(&env, "commitment")).is_some());
+    assert!(map.get(Symbol::new(&env, "leaf_index")).is_some());
+    assert!(map.get(Symbol::new(&env, "depositor")).is_none());
+    assert!(map.get(Symbol::new(&env, "amount")).is_none());
 }
 
 #[test]
 fn shielded_transfer_records_nullifier_and_commitment() {
     let env = Env::default();
-    let (admin, client, _) = setup_vault(&env);
+    let (admin, client, _, _) = setup_vault(&env);
 
-    let deposit_commitment = BytesN::from_array(&env, &[3u8; 32]);
-    client.deposit(&admin, &1_000_i128, &deposit_commitment);
+    seed_pool(&env, &client, &admin, 3);
 
-    let root = client.get_root();
+    let root = client.get_pool_root(&POOL_ID);
     let nullifier = BytesN::from_array(&env, &[7u8; 32]);
     let new_commitment = BytesN::from_array(&env, &[8u8; 32]);
     let zero = zero_bytes(&env);
-    let public_inputs = transfer_public_inputs(&env, &client, &root, &nullifier, &new_commitment);
+    let public_inputs = pool_public_inputs(&env, &client, &root, &nullifier, &new_commitment);
     let proof = Bytes::from_array(&env, &[1u8; 32]);
     let epk = zero_bytes(&env);
     let encrypted = encrypted_note(&env);
     let dummy = dummy_enc(&env);
 
     client.shielded_transfer(
+        &POOL_ID,
         &nullifier,
         &zero,
         &zero,
@@ -138,26 +203,24 @@ fn shielded_transfer_records_nullifier_and_commitment() {
     );
 
     assert!(client.is_spent(&nullifier));
-    assert_eq!(client.leaf_count(), 2);
+    assert_eq!(client.pool_leaf_count(&POOL_ID), 4);
 }
 
 #[test]
 fn shielded_transfer_2_outputs() {
     let env = Env::default();
-    let (admin, client, _) = setup_vault(&env);
+    let (admin, client, _, _) = setup_vault(&env);
 
-    let c0 = BytesN::from_array(&env, &[3u8; 32]);
-    let c1 = BytesN::from_array(&env, &[4u8; 32]);
-    client.deposit(&admin, &600_i128, &c0);
-    client.deposit(&admin, &400_i128, &c1);
+    seed_pool(&env, &client, &admin, 3);
 
-    let root = client.get_root();
+    let root = client.get_pool_root(&POOL_ID);
     let nf0 = BytesN::from_array(&env, &[7u8; 32]);
     let nf1 = BytesN::from_array(&env, &[9u8; 32]);
     let out0 = BytesN::from_array(&env, &[8u8; 32]);
     let out1 = BytesN::from_array(&env, &[10u8; 32]);
     let zero = zero_bytes(&env);
     let public_inputs = client.build_public_inputs(
+        &POOL_ID,
         &root,
         &nf0,
         &nf1,
@@ -168,12 +231,14 @@ fn shielded_transfer_2_outputs() {
         &zero,
         &zero,
         &zero,
+        &zero,
     );
     let proof = Bytes::from_array(&env, &[1u8; 32]);
     let epk = zero_bytes(&env);
     let encrypted = encrypted_note(&env);
 
     client.shielded_transfer(
+        &POOL_ID,
         &nf0,
         &nf1,
         &zero,
@@ -197,7 +262,50 @@ fn shielded_transfer_2_outputs() {
 
     assert!(client.is_spent(&nf0));
     assert!(client.is_spent(&nf1));
-    assert_eq!(client.leaf_count(), 4);
+    assert_eq!(client.pool_leaf_count(&POOL_ID), 5);
+}
+
+#[test]
+#[should_panic(expected = "pool below min anonymity set size")]
+fn spend_reverts_when_pool_below_min_size() {
+    let env = Env::default();
+    let (admin, client, _, _) = setup_vault(&env);
+
+    let commitment = BytesN::from_array(&env, &[3u8; 32]);
+    client.join_pool(&admin, &POOL_ID, &commitment);
+
+    let root = client.get_pool_root(&POOL_ID);
+    let nullifier = BytesN::from_array(&env, &[7u8; 32]);
+    let new_commitment = BytesN::from_array(&env, &[8u8; 32]);
+    let zero = zero_bytes(&env);
+    let public_inputs = pool_public_inputs(&env, &client, &root, &nullifier, &new_commitment);
+    let proof = Bytes::from_array(&env, &[1u8; 32]);
+    let epk = zero_bytes(&env);
+    let encrypted = encrypted_note(&env);
+    let dummy = dummy_enc(&env);
+
+    client.shielded_transfer(
+        &POOL_ID,
+        &nullifier,
+        &zero,
+        &zero,
+        &zero,
+        &new_commitment,
+        &zero,
+        &zero,
+        &zero,
+        &root,
+        &public_inputs,
+        &proof,
+        &epk,
+        &encrypted,
+        &epk,
+        &dummy,
+        &epk,
+        &dummy,
+        &epk,
+        &dummy,
+    );
 }
 
 #[test]
@@ -224,7 +332,7 @@ fn hash_pair_matches_noir_fixture() {
 #[test]
 fn register_and_read_shielded_key() {
     let env = Env::default();
-    let (admin, client, _) = setup_vault(&env);
+    let (admin, client, _, _) = setup_vault(&env);
     let receive_pubkey = BytesN::from_array(&env, &[9u8; 32]);
 
     client.register_shielded_key(&admin, &receive_pubkey);
@@ -251,23 +359,33 @@ fn register_shielded_key_requires_auth() {
 }
 
 #[test]
-fn withdraw_transfers_tokens_to_recipient() {
+fn exit_pool_transfers_to_recipient_and_relayer() {
     let env = Env::default();
-    let (admin, client, token) = setup_vault(&env);
+    let (admin, client, token, vault_id) = setup_vault(&env);
+
+    seed_pool(&env, &client, &admin, 3);
+
     let recipient = Address::generate(&env);
-
-    let amount = 5_000_i128;
-    let commitment = BytesN::from_array(&env, &[3u8; 32]);
-    client.deposit(&admin, &amount, &commitment);
-
+    let relayer = Address::generate(&env);
     let sac = token::StellarAssetClient::new(&env, &token);
-    let recipient_before = sac.balance(&recipient);
+    sac.mint(&recipient, &0);
+    sac.mint(&relayer, &0);
 
-    let root = client.get_root();
+    let vault_balance_before = sac.balance(&vault_id);
+    let recipient_before = sac.balance(&recipient);
+    let relayer_before = sac.balance(&relayer);
+
+    let root = client.get_pool_root(&POOL_ID);
     let nullifier = BytesN::from_array(&env, &[11u8; 32]);
     let zero = zero_bytes(&env);
-    let public_amount = zero_bytes(&env);
+    let join_amount = JOIN_AMOUNTS[POOL_ID as usize];
+    let relayer_fee_stroops = 100_000_u32;
+    let public_amount =
+        Bn254Fr::from_u256(U256::from_u32(&env, join_amount as u32)).to_bytes();
+    let relayer_fee =
+        Bn254Fr::from_u256(U256::from_u32(&env, relayer_fee_stroops)).to_bytes();
     let public_inputs = client.build_public_inputs(
+        &POOL_ID,
         &root,
         &nullifier,
         &zero,
@@ -278,42 +396,110 @@ fn withdraw_transfers_tokens_to_recipient() {
         &zero,
         &zero,
         &public_amount,
+        &relayer_fee,
     );
     let proof = Bytes::from_array(&env, &[2u8; 32]);
 
-    client.withdraw(
+    client.exit_pool(
+        &POOL_ID,
         &recipient,
+        &relayer,
         &nullifier,
-        &amount,
+        &zero,
+        &zero,
+        &zero,
         &root,
         &public_inputs,
         &proof,
+        &relayer_fee_stroops,
     );
 
     assert!(client.is_spent(&nullifier));
-    assert_eq!(sac.balance(&recipient), recipient_before + amount);
+    assert_eq!(
+        sac.balance(&vault_id),
+        vault_balance_before - join_amount,
+        "vault pays join amount"
+    );
+    assert_eq!(
+        sac.balance(&recipient),
+        recipient_before + join_amount - relayer_fee_stroops as i128
+    );
+    assert_eq!(
+        sac.balance(&relayer),
+        relayer_before + relayer_fee_stroops as i128
+    );
+}
+
+#[test]
+#[should_panic(expected = "relayer_fee mismatch")]
+fn exit_pool_wrong_relayer_fee_reverts() {
+    let env = Env::default();
+    let (admin, client, _, _) = setup_vault(&env);
+
+    seed_pool(&env, &client, &admin, 3);
+
+    let recipient = Address::generate(&env);
+    let relayer = Address::generate(&env);
+    let root = client.get_pool_root(&POOL_ID);
+    let nullifier = BytesN::from_array(&env, &[11u8; 32]);
+    let zero = zero_bytes(&env);
+    let join_amount = JOIN_AMOUNTS[POOL_ID as usize];
+    let relayer_fee_stroops = 100_000_u32;
+    let public_amount =
+        Bn254Fr::from_u256(U256::from_u32(&env, join_amount as u32)).to_bytes();
+    let relayer_fee =
+        Bn254Fr::from_u256(U256::from_u32(&env, relayer_fee_stroops)).to_bytes();
+    let public_inputs = client.build_public_inputs(
+        &POOL_ID,
+        &root,
+        &nullifier,
+        &zero,
+        &zero,
+        &zero,
+        &zero,
+        &zero,
+        &zero,
+        &zero,
+        &public_amount,
+        &relayer_fee,
+    );
+    let proof = Bytes::from_array(&env, &[2u8; 32]);
+
+    client.exit_pool(
+        &POOL_ID,
+        &recipient,
+        &relayer,
+        &nullifier,
+        &zero,
+        &zero,
+        &zero,
+        &root,
+        &public_inputs,
+        &proof,
+        &50_000_u32,
+    );
 }
 
 #[test]
 #[should_panic(expected = "nullifier spent")]
 fn double_spend_nullifier_reverts() {
     let env = Env::default();
-    let (admin, client, _) = setup_vault(&env);
+    let (admin, client, _, _) = setup_vault(&env);
 
-    let commitment = BytesN::from_array(&env, &[3u8; 32]);
-    client.deposit(&admin, &1_000_i128, &commitment);
+    seed_pool(&env, &client, &admin, 3);
 
-    let root = client.get_root();
+    let root = client.get_pool_root(&POOL_ID);
     let nullifier = BytesN::from_array(&env, &[7u8; 32]);
     let new_commitment = BytesN::from_array(&env, &[8u8; 32]);
     let zero = zero_bytes(&env);
-    let public_inputs = transfer_public_inputs(&env, &client, &root, &nullifier, &new_commitment);
+    let public_inputs = pool_public_inputs(&env, &client, &root, &nullifier, &new_commitment);
     let proof = Bytes::from_array(&env, &[1u8; 32]);
     let epk = zero_bytes(&env);
     let encrypted = encrypted_note(&env);
     let dummy = dummy_enc(&env);
 
     let args = (
+        POOL_ID,
         nullifier.clone(),
         zero.clone(),
         zero.clone(),
@@ -338,12 +524,12 @@ fn double_spend_nullifier_reverts() {
     client.shielded_transfer(
         &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7, &args.8,
         &args.9, &args.10, &args.11, &args.12, &args.13, &args.14, &args.15, &args.16,
-        &args.17, &args.18,
+        &args.17, &args.18, &args.19,
     );
     client.shielded_transfer(
         &args.0, &args.1, &args.2, &args.3, &args.4, &args.5, &args.6, &args.7, &args.8,
         &args.9, &args.10, &args.11, &args.12, &args.13, &args.14, &args.15, &args.16,
-        &args.17, &args.18,
+        &args.17, &args.18, &args.19,
     );
 }
 
@@ -351,22 +537,22 @@ fn double_spend_nullifier_reverts() {
 #[should_panic(expected = "stale merkle root")]
 fn stale_merkle_root_reverts() {
     let env = Env::default();
-    let (admin, client, _) = setup_vault(&env);
+    let (admin, client, _, _) = setup_vault(&env);
 
-    let commitment = BytesN::from_array(&env, &[3u8; 32]);
-    client.deposit(&admin, &1_000_i128, &commitment);
+    seed_pool(&env, &client, &admin, 3);
 
     let stale_root = BytesN::from_array(&env, &[4u8; 32]);
     let nullifier = BytesN::from_array(&env, &[7u8; 32]);
     let new_commitment = BytesN::from_array(&env, &[8u8; 32]);
     let zero = zero_bytes(&env);
-    let public_inputs = transfer_public_inputs(&env, &client, &stale_root, &nullifier, &new_commitment);
+    let public_inputs = pool_public_inputs(&env, &client, &stale_root, &nullifier, &new_commitment);
     let proof = Bytes::from_array(&env, &[1u8; 32]);
     let epk = zero_bytes(&env);
     let encrypted = encrypted_note(&env);
     let dummy = dummy_enc(&env);
 
     client.shielded_transfer(
+        &POOL_ID,
         &nullifier,
         &zero,
         &zero,
@@ -393,22 +579,22 @@ fn stale_merkle_root_reverts() {
 #[should_panic(expected = "encrypted_note required")]
 fn shielded_transfer_empty_encrypted_reverts() {
     let env = Env::default();
-    let (admin, client, _) = setup_vault(&env);
+    let (admin, client, _, _) = setup_vault(&env);
 
-    let commitment = BytesN::from_array(&env, &[3u8; 32]);
-    client.deposit(&admin, &1_000_i128, &commitment);
+    seed_pool(&env, &client, &admin, 3);
 
-    let root = client.get_root();
+    let root = client.get_pool_root(&POOL_ID);
     let nullifier = BytesN::from_array(&env, &[7u8; 32]);
     let new_commitment = BytesN::from_array(&env, &[8u8; 32]);
     let zero = zero_bytes(&env);
-    let public_inputs = transfer_public_inputs(&env, &client, &root, &nullifier, &new_commitment);
+    let public_inputs = pool_public_inputs(&env, &client, &root, &nullifier, &new_commitment);
     let proof = Bytes::from_array(&env, &[1u8; 32]);
     let epk = zero_bytes(&env);
     let empty = Bytes::new(&env);
     let dummy = dummy_enc(&env);
 
     client.shielded_transfer(
+        &POOL_ID,
         &nullifier,
         &zero,
         &zero,
@@ -445,22 +631,22 @@ fn reject_verifier_blocks_spend() {
     client.initialize(&admin, &token, &verifier_id);
 
     let sac = token::StellarAssetClient::new(&env, &token);
-    sac.mint(&admin, &100_000_i128);
+    sac.mint(&admin, &1_000_000_000_i128);
 
-    let commitment = BytesN::from_array(&env, &[3u8; 32]);
-    client.deposit(&admin, &1_000_i128, &commitment);
+    seed_pool(&env, &client, &admin, 3);
 
-    let root = client.get_root();
+    let root = client.get_pool_root(&POOL_ID);
     let nullifier = BytesN::from_array(&env, &[7u8; 32]);
     let new_commitment = BytesN::from_array(&env, &[8u8; 32]);
     let zero = zero_bytes(&env);
-    let public_inputs = transfer_public_inputs(&env, &client, &root, &nullifier, &new_commitment);
+    let public_inputs = pool_public_inputs(&env, &client, &root, &nullifier, &new_commitment);
     let proof = Bytes::from_array(&env, &[1u8; 32]);
     let epk = zero_bytes(&env);
     let encrypted = encrypted_note(&env);
     let dummy = dummy_enc(&env);
 
     client.shielded_transfer(
+        &POOL_ID,
         &nullifier,
         &zero,
         &zero,

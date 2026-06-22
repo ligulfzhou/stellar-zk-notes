@@ -28,15 +28,19 @@ function witnessToNoirInputs(witness: TransferWitnessPayload): InputMap {
     spend_value: witness.spend_value,
     spend_secret: witness.spend_secret,
     spend_nullifier_secret: witness.spend_nullifier_secret,
+    spend_deposit_secret: witness.spend_deposit_secret,
     spend_merkle_path: witness.spend_merkle_path,
     spend_path_indices: witness.spend_path_indices,
     out_value: witness.out_value,
     out_secret: witness.out_secret,
     out_nullifier_secret: witness.out_nullifier_secret,
+    out_deposit_secret: witness.out_deposit_secret,
+    pool_id: witness.pool_id,
     merkle_root: witness.merkle_root,
     nullifier: witness.nullifier,
     new_commitment: witness.new_commitment,
     public_amount: witness.public_amount,
+    relayer_fee: witness.relayer_fee,
   };
 }
 

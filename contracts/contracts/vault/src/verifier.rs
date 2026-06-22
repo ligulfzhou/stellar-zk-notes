@@ -1,18 +1,21 @@
 use soroban_sdk::{Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec};
 
-/// BN254 public inputs for `transfer_actions` (10 x 32 bytes).
-pub const PUBLIC_INPUTS_LEN: u32 = 320;
+/// BN254 public inputs for `pool_actions` (12 x 32 bytes).
+pub const PUBLIC_INPUTS_LEN: u32 = 384;
 pub const MAX_ACTION_SLOTS: usize = 4;
 
-/// Layout: merkle_root | nullifier[4] | new_commitment[4] | public_amount
+/// Layout: pool_id | merkle_root | nullifier[4] | new_commitment[4] | public_amount | relayer_fee
 pub fn encode_public_inputs(
     env: &Env,
+    pool_id: &BytesN<32>,
     merkle_root: &BytesN<32>,
     nullifiers: &[BytesN<32>; MAX_ACTION_SLOTS],
     new_commitments: &[BytesN<32>; MAX_ACTION_SLOTS],
     public_amount: &BytesN<32>,
+    relayer_fee: &BytesN<32>,
 ) -> Bytes {
     let mut out = Bytes::new(env);
+    out.extend_from_slice(&pool_id.to_array());
     out.extend_from_slice(&merkle_root.to_array());
     for nf in nullifiers {
         out.extend_from_slice(&nf.to_array());
@@ -21,6 +24,7 @@ pub fn encode_public_inputs(
         out.extend_from_slice(&nc.to_array());
     }
     out.extend_from_slice(&public_amount.to_array());
+    out.extend_from_slice(&relayer_fee.to_array());
     out
 }
 
@@ -33,7 +37,7 @@ pub fn verify_transfer_proof(
     assert_eq!(
         public_inputs.len(),
         PUBLIC_INPUTS_LEN,
-        "public_inputs must be 10 fields"
+        "public_inputs must be 12 fields"
     );
     let verify = Symbol::new(env, "verify_proof");
     let mut args: Vec<Val> = Vec::new(env);
@@ -59,4 +63,8 @@ pub fn mark_nullifier_spent(env: &Env, nullifier: &BytesN<32>) {
     env.storage()
         .persistent()
         .set(&super::storage::DataKey::Nullifier(nullifier.clone()), &true);
+}
+
+pub fn has_active_spend(nullifiers: &[BytesN<32>; MAX_ACTION_SLOTS]) -> bool {
+    nullifiers.iter().any(|nf| !is_zero_bytes(nf))
 }

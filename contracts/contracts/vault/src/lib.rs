@@ -1,17 +1,20 @@
 #![no_std]
 
 mod merkle;
+mod pool;
 mod storage;
 mod verifier;
 
 use merkle::{MerkleTree, TREE_HEIGHT};
+use pool::{is_valid_pool_id, JOIN_AMOUNTS, POOL_COUNT};
 use soroban_sdk::{
     contract, contractevent, contractimpl, contracttype, crypto::bn254::Bn254Fr, token, Address,
-    Bytes, BytesN, Env,
+    Bytes, BytesN, Env, U256,
 };
 use storage::DataKey;
 use verifier::{
-    encode_public_inputs, mark_nullifier_spent, verify_transfer_proof, MAX_ACTION_SLOTS,
+    encode_public_inputs, has_active_spend, mark_nullifier_spent, verify_transfer_proof,
+    MAX_ACTION_SLOTS,
 };
 
 #[contracttype]
@@ -23,15 +26,15 @@ pub struct VaultConfig {
 }
 
 #[contractevent]
-pub struct DepositEvent {
-    pub depositor: Address,
+pub struct JoinEvent {
+    pub pool_id: u32,
     pub commitment: BytesN<32>,
     pub leaf_index: u32,
-    pub amount: i128,
 }
 
 #[contractevent]
 pub struct ShieldedSendEvent {
+    pub pool_id: u32,
     pub nullifier: BytesN<32>,
     pub new_commitment: BytesN<32>,
     pub leaf_index: u32,
@@ -40,10 +43,9 @@ pub struct ShieldedSendEvent {
 }
 
 #[contractevent]
-pub struct WithdrawEvent {
-    pub recipient: Address,
+pub struct ExitEvent {
+    pub pool_id: u32,
     pub nullifier: BytesN<32>,
-    pub amount: i128,
 }
 
 #[contractevent]
@@ -63,6 +65,23 @@ fn zero_bytes(env: &Env) -> BytesN<32> {
     BytesN::from_array(env, &[0u8; 32])
 }
 
+fn field_bytes_from_u32(env: &Env, value: u32) -> BytesN<32> {
+    Bn254Fr::from_u256(U256::from_u32(env, value)).to_bytes()
+}
+
+fn load_pool_tree(env: &Env, pool_id: u32) -> MerkleTree {
+    assert!(is_valid_pool_id(pool_id), "invalid pool_id");
+    env.storage()
+        .instance()
+        .get(&DataKey::PoolTree(pool_id))
+        .unwrap()
+}
+
+fn store_pool_tree(env: &Env, pool_id: u32, tree: &MerkleTree) {
+    env.storage()
+        .instance()
+        .set(&DataKey::PoolTree(pool_id), tree);
+}
 
 #[contractimpl]
 impl Vault {
@@ -73,39 +92,39 @@ impl Vault {
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage().instance().set(&DataKey::Token, &token);
         env.storage().instance().set(&DataKey::Verifier, &verifier);
-        let tree = MerkleTree::empty(&env);
-        env.storage().instance().set(&DataKey::MerkleTree, &tree);
+        env.storage()
+            .instance()
+            .set(&DataKey::MinPoolSize, &pool::MIN_POOL_SIZE);
+        for pool_id in 0..POOL_COUNT {
+            let tree = MerkleTree::empty(&env);
+            store_pool_tree(&env, pool_id, &tree);
+        }
     }
 
-    pub fn deposit(env: Env, from: Address, amount: i128, commitment: BytesN<32>) {
+    pub fn join_pool(env: Env, from: Address, pool_id: u32, commitment: BytesN<32>) {
         from.require_auth();
-        assert!(amount > 0, "amount must be positive");
+        assert!(is_valid_pool_id(pool_id), "invalid pool");
 
+        let amount = JOIN_AMOUNTS[pool_id as usize];
         let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
         let vault_addr = env.current_contract_address();
         let token_client = token::Client::new(&env, &token_addr);
         token_client.transfer(&from, &vault_addr, &amount);
 
-        let mut tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
-        let leaf = Bn254Fr::from_bytes(commitment.clone());
-        let leaf_index = tree.insert(&env, leaf);
-        env.storage()
-            .persistent()
-            .set(&DataKey::LeafCommitment(leaf_index), &commitment);
-        env.storage().instance().set(&DataKey::MerkleTree, &tree);
+        let leaf_index = Self::insert_pool_commitment(&env, pool_id, &commitment);
 
-        DepositEvent {
-            depositor: from,
+        JoinEvent {
+            pool_id,
             commitment,
             leaf_index,
-            amount,
         }
         .publish(&env);
     }
 
-    /// Action-bundle shielded transfer: up to 4 spends and 4 outputs in one proof.
+    /// Action-bundle shielded transfer scoped to a denomination pool.
     pub fn shielded_transfer(
         env: Env,
+        pool_id: u32,
         nullifier0: BytesN<32>,
         nullifier1: BytesN<32>,
         nullifier2: BytesN<32>,
@@ -155,25 +174,19 @@ impl Vault {
 
         let leaf_indices = Self::apply_transfer(
             &env,
+            pool_id,
             &nullifiers,
             &commitments,
             merkle_root,
             public_inputs,
             proof_bytes,
-            None,
-            0,
         );
-
-        let primary_nf = nullifiers
-            .iter()
-            .find(|n| !is_zero_bytes(n))
-            .cloned()
-            .unwrap_or_else(|| zero_bytes(&env));
 
         for i in 0..MAX_ACTION_SLOTS {
             if let Some(leaf_index) = leaf_indices[i] {
                 ShieldedSendEvent {
-                    nullifier: primary_nf.clone(),
+                    pool_id,
+                    nullifier: nullifiers[i].clone(),
                     new_commitment: commitments[i].clone(),
                     leaf_index,
                     epk: epks[i].clone(),
@@ -184,59 +197,88 @@ impl Vault {
         }
     }
 
-    pub fn withdraw(
+    /// Exit pool: burn shielded note and atomically pay recipient (+ optional relayer fee).
+    pub fn exit_pool(
         env: Env,
-        to: Address,
-        nullifier: BytesN<32>,
-        amount: i128,
+        pool_id: u32,
+        recipient: Address,
+        relayer: Address,
+        nullifier0: BytesN<32>,
+        nullifier1: BytesN<32>,
+        nullifier2: BytesN<32>,
+        nullifier3: BytesN<32>,
         merkle_root: BytesN<32>,
         public_inputs: Bytes,
         proof_bytes: Bytes,
+        relayer_fee_stroops: u32,
     ) {
-        assert!(amount > 0, "amount must be positive");
-        let event_nullifier = nullifier.clone();
+        assert!(is_valid_pool_id(pool_id), "invalid pool");
+
+        let nullifiers = [
+            nullifier0.clone(),
+            nullifier1.clone(),
+            nullifier2.clone(),
+            nullifier3.clone(),
+        ];
         let zero = zero_bytes(&env);
-        let nullifiers = [nullifier, zero.clone(), zero.clone(), zero.clone()];
         let commitments = [zero.clone(), zero.clone(), zero.clone(), zero];
+
+        Self::verify_exit_public_inputs(&env, pool_id, &public_inputs, relayer_fee_stroops);
 
         Self::apply_transfer(
             &env,
+            pool_id,
             &nullifiers,
             &commitments,
             merkle_root,
             public_inputs,
             proof_bytes,
-            Some(to.clone()),
-            amount,
         );
 
-        WithdrawEvent {
-            recipient: to,
-            nullifier: event_nullifier,
-            amount,
+        let join_amount = JOIN_AMOUNTS[pool_id as usize];
+        let fee = relayer_fee_stroops as i128;
+        assert!(fee >= 0 && fee <= join_amount, "relayer fee out of range");
+        let payout = join_amount - fee;
+
+        let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
+        let vault_addr = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token_addr);
+        token_client.transfer(&vault_addr, &recipient, &payout);
+        if fee > 0 {
+            token_client.transfer(&vault_addr, &relayer, &fee);
+        }
+
+        let primary_nf = nullifiers
+            .iter()
+            .find(|n| !is_zero_bytes(n))
+            .cloned()
+            .unwrap_or_else(|| zero_bytes(&env));
+
+        ExitEvent {
+            pool_id,
+            nullifier: primary_nf,
         }
         .publish(&env);
     }
 
-    pub fn get_root(env: Env) -> BytesN<32> {
-        let tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
+    pub fn get_pool_root(env: Env, pool_id: u32) -> BytesN<32> {
+        let tree = load_pool_tree(&env, pool_id);
         tree.root(&env).to_bytes()
     }
 
-    pub fn leaf_count(env: Env) -> u32 {
-        let tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
-        tree.leaf_count
+    pub fn pool_leaf_count(env: Env, pool_id: u32) -> u32 {
+        load_pool_tree(&env, pool_id).leaf_count
     }
 
-    pub fn get_filled_at_level(env: Env, level: u32) -> BytesN<32> {
+    pub fn get_filled_at_level(env: Env, pool_id: u32, level: u32) -> BytesN<32> {
         assert!(level < TREE_HEIGHT, "level out of range");
-        let tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
+        let tree = load_pool_tree(&env, pool_id);
         tree.filled.get(level).unwrap()
     }
 
-    pub fn get_zero_at_level(env: Env, level: u32) -> BytesN<32> {
+    pub fn get_zero_at_level(env: Env, pool_id: u32, level: u32) -> BytesN<32> {
         assert!(level < TREE_HEIGHT, "level out of range");
-        let tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
+        let tree = load_pool_tree(&env, pool_id);
         tree.zeros.get(level).unwrap()
     }
 
@@ -258,10 +300,10 @@ impl Vault {
             .get(&DataKey::ShieldedKey(owner))
     }
 
-    pub fn get_commitment_at(env: Env, leaf_index: u32) -> Option<BytesN<32>> {
+    pub fn get_commitment_at(env: Env, pool_id: u32, leaf_index: u32) -> Option<BytesN<32>> {
         env.storage()
             .persistent()
-            .get(&DataKey::LeafCommitment(leaf_index))
+            .get(&DataKey::PoolLeafCommitment(pool_id, leaf_index))
     }
 
     pub fn is_spent(env: Env, nullifier: BytesN<32>) -> bool {
@@ -271,60 +313,129 @@ impl Vault {
             .unwrap_or(false)
     }
 
-    fn insert_commitment(env: &Env, new_commitment: &BytesN<32>) -> Option<u32> {
+    fn insert_pool_commitment(env: &Env, pool_id: u32, new_commitment: &BytesN<32>) -> u32 {
+        let mut tree = load_pool_tree(env, pool_id);
+        let leaf = Bn254Fr::from_bytes(new_commitment.clone());
+        let leaf_index = tree.insert(env, leaf);
+        env.storage().persistent().set(
+            &DataKey::PoolLeafCommitment(pool_id, leaf_index),
+            new_commitment,
+        );
+        store_pool_tree(env, pool_id, &tree);
+        leaf_index
+    }
+
+    fn insert_commitment(
+        env: &Env,
+        pool_id: u32,
+        new_commitment: &BytesN<32>,
+    ) -> Option<u32> {
         if is_zero_bytes(new_commitment) {
             return None;
         }
-        let mut tree: MerkleTree = env.storage().instance().get(&DataKey::MerkleTree).unwrap();
-        let leaf = Bn254Fr::from_bytes(new_commitment.clone());
-        let leaf_index = tree.insert(env, leaf);
-        env.storage()
-            .persistent()
-            .set(&DataKey::LeafCommitment(leaf_index), new_commitment);
-        env.storage().instance().set(&DataKey::MerkleTree, &tree);
-        Some(leaf_index)
+        Some(Self::insert_pool_commitment(env, pool_id, new_commitment))
+    }
+
+    fn field_at(public_inputs: &Bytes, index: u32) -> [u8; 32] {
+        let start = index * 32;
+        assert!(
+            public_inputs.len() >= start + 32,
+            "public_inputs too short"
+        );
+        let mut out = [0u8; 32];
+        public_inputs
+            .slice(start..start + 32)
+            .copy_into_slice(&mut out);
+        out
+    }
+
+    fn verify_exit_public_inputs(
+        env: &Env,
+        pool_id: u32,
+        public_inputs: &Bytes,
+        relayer_fee_stroops: u32,
+    ) {
+        assert_eq!(
+            public_inputs.len(),
+            verifier::PUBLIC_INPUTS_LEN,
+            "public_inputs must be 12 fields"
+        );
+
+        let pool_field = BytesN::from_array(env, &Self::field_at(public_inputs, 0));
+        let expected_pool = field_bytes_from_u32(env, pool_id);
+        assert_eq!(pool_field, expected_pool, "pool_id mismatch in public inputs");
+
+        let amount_field = BytesN::from_array(env, &Self::field_at(public_inputs, 10));
+        let join_amount = JOIN_AMOUNTS[pool_id as usize];
+        let expected_amount =
+            Bn254Fr::from_u256(U256::from_u32(env, join_amount as u32)).to_bytes();
+        assert_eq!(
+            amount_field, expected_amount,
+            "public_amount must match pool join amount"
+        );
+
+        let fee_field = BytesN::from_array(env, &Self::field_at(public_inputs, 11));
+        let expected_fee =
+            Bn254Fr::from_u256(U256::from_u32(env, relayer_fee_stroops)).to_bytes();
+        assert_eq!(
+            fee_field, expected_fee,
+            "relayer_fee mismatch in public inputs"
+        );
+        assert!(
+            (relayer_fee_stroops as i128) <= join_amount,
+            "relayer fee exceeds pool amount"
+        );
+
+        for i in 6..10 {
+            let nc = BytesN::from_array(env, &Self::field_at(public_inputs, i));
+            assert!(is_zero_bytes(&nc), "exit must not create shielded outputs");
+        }
     }
 
     fn apply_transfer(
         env: &Env,
+        pool_id: u32,
         nullifiers: &[BytesN<32>; MAX_ACTION_SLOTS],
         new_commitments: &[BytesN<32>; MAX_ACTION_SLOTS],
         merkle_root: BytesN<32>,
         public_inputs: Bytes,
         proof_bytes: Bytes,
-        withdraw_to: Option<Address>,
-        withdraw_amount: i128,
     ) -> [Option<u32>; MAX_ACTION_SLOTS] {
+        assert!(is_valid_pool_id(pool_id), "invalid pool_id");
+
         for nf in nullifiers {
             mark_nullifier_spent(env, nf);
         }
-        assert_eq!(merkle_root, Self::get_root(env.clone()), "stale merkle root");
+
+        if has_active_spend(nullifiers) {
+            let min_size: u32 = env
+                .storage()
+                .instance()
+                .get(&DataKey::MinPoolSize)
+                .unwrap_or(pool::MIN_POOL_SIZE);
+            let count = Self::pool_leaf_count(env.clone(), pool_id);
+            assert!(count >= min_size, "pool below min anonymity set size");
+        }
+
+        assert_eq!(
+            merkle_root,
+            Self::get_pool_root(env.clone(), pool_id),
+            "stale merkle root"
+        );
 
         let verifier: Address = env.storage().instance().get(&DataKey::Verifier).unwrap();
         verify_transfer_proof(env, &verifier, &public_inputs, &proof_bytes);
 
-        if withdraw_amount > 0 {
-            assert!(
-                new_commitments.iter().all(is_zero_bytes),
-                "withdraw must not create shielded outputs"
-            );
-            let token_addr: Address = env.storage().instance().get(&DataKey::Token).unwrap();
-            let vault_addr = env.current_contract_address();
-            let recipient = withdraw_to.expect("withdraw recipient required");
-            let token_client = token::Client::new(env, &token_addr);
-            token_client.transfer(&vault_addr, &recipient, &withdraw_amount);
-            return [None, None, None, None];
-        }
-
         let mut out = [None, None, None, None];
         for i in 0..MAX_ACTION_SLOTS {
-            out[i] = Self::insert_commitment(env, &new_commitments[i]);
+            out[i] = Self::insert_commitment(env, pool_id, &new_commitments[i]);
         }
         out
     }
 
     pub fn build_public_inputs(
         env: Env,
+        pool_id: u32,
         merkle_root: BytesN<32>,
         nullifier0: BytesN<32>,
         nullifier1: BytesN<32>,
@@ -335,9 +446,12 @@ impl Vault {
         new_commitment2: BytesN<32>,
         new_commitment3: BytesN<32>,
         public_amount: BytesN<32>,
+        relayer_fee: BytesN<32>,
     ) -> Bytes {
+        let pool_id_field = field_bytes_from_u32(&env, pool_id);
         encode_public_inputs(
             &env,
+            &pool_id_field,
             &merkle_root,
             &[
                 nullifier0,
@@ -352,6 +466,7 @@ impl Vault {
                 new_commitment3,
             ],
             &public_amount,
+            &relayer_fee,
         )
     }
 }

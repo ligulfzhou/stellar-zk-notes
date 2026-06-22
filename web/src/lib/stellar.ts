@@ -9,7 +9,13 @@ import {
 } from "@stellar/stellar-sdk";
 import { fieldDecToBytes32, fieldHexToBytes32 } from "./field";
 import { formatError } from "./format-error";
-import { STELLAR_NETWORK, VAULT_CONTRACT_ID, VAULT_LEGACY_SEND } from "./config";
+import {
+  PRIVACY_MODE,
+  RELAYER_URL,
+  STELLAR_NETWORK,
+  VAULT_CONTRACT_ID,
+  VAULT_LEGACY_SEND,
+} from "./config";
 import {
   accountExistsViaApi,
   fetchStellarAccount,
@@ -45,11 +51,10 @@ export async function ensureAccountOnNetwork(publicKey: string): Promise<void> {
 }
 
 async function loadSourceAccount(sourcePublicKey: string): Promise<Account> {
-  await ensureAccountOnNetwork(sourcePublicKey);
   try {
     return await fetchStellarAccount(sourcePublicKey);
   } catch (err) {
-    throw new Error(`Account lookup failed: ${formatError(err)}`);
+    throw new Error(formatError(err) || "Account lookup failed");
   }
 }
 
@@ -80,6 +85,22 @@ async function signAndSend(
   } catch (err) {
     throw new Error(formatError(err) || "Wallet signing cancelled");
   }
+  if (PRIVACY_MODE === "strict" && RELAYER_URL) {
+    try {
+      const res = await fetch(`${RELAYER_URL.replace(/\/$/, "")}/submit`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ xdr: signed }),
+      });
+      const data = (await res.json()) as { txHash?: string; error?: string };
+      if (!res.ok || !data.txHash) {
+        throw new Error(data.error ?? "Relayer submit failed");
+      }
+      return data.txHash;
+    } catch (err) {
+      throw new Error(formatError(err));
+    }
+  }
   try {
     return await sendTransactionViaApi(signed);
   } catch (err) {
@@ -87,11 +108,17 @@ async function signAndSend(
   }
 }
 
+/** True when txs go directly to RPC (dev privacy mode or no relayer URL). */
+export function usesDirectSubmit(): boolean {
+  return PRIVACY_MODE === "dev" || !RELAYER_URL;
+}
+
 export async function getVaultLeafCount(
-  sourcePublicKey: string
+  sourcePublicKey: string,
+  poolId = 0
 ): Promise<number> {
   const res = await fetch(
-    `/api/vault-leaf-count?reader=${encodeURIComponent(sourcePublicKey)}`
+    `/api/vault-leaf-count?reader=${encodeURIComponent(sourcePublicKey)}&poolId=${poolId}`
   );
   const data = (await res.json()) as { leafCount?: number; error?: string };
   if (!res.ok) {
@@ -102,25 +129,28 @@ export async function getVaultLeafCount(
 
 async function waitForLeafCountIncrease(
   sourcePublicKey: string,
+  poolId: number,
   before: number,
   attempts = 8,
   delayMs = 1500
 ): Promise<number> {
   for (let i = 0; i < attempts; i++) {
-    const count = await getVaultLeafCount(sourcePublicKey);
+    const count = await getVaultLeafCount(sourcePublicKey, poolId);
     if (count > before) return count;
     await new Promise((resolve) => setTimeout(resolve, delayMs));
   }
-  return getVaultLeafCount(sourcePublicKey);
+  return getVaultLeafCount(sourcePublicKey, poolId);
 }
 
-export async function depositToVault(params: {
+export async function joinPoolOnVault(params: {
   sourcePublicKey: string;
   signTransaction: (xdr: string) => Promise<string>;
-  amountStroops: bigint;
+  poolId: number;
   commitmentHex: string;
 }): Promise<{ txHash: string; leafIndex: number }> {
-  const before = await getVaultLeafCount(params.sourcePublicKey).catch(() => 0);
+  const before = await getVaultLeafCount(params.sourcePublicKey, params.poolId).catch(
+    () => 0
+  );
   const txHash = await signAndSend(
     params.sourcePublicKey,
     async (source) => {
@@ -132,9 +162,9 @@ export async function depositToVault(params: {
         networkPassphrase: networkPassphrase(),
       }).addOperation(
         contract.call(
-          "deposit",
+          "join_pool",
           from.toScVal(),
-          nativeToScVal(params.amountStroops, { type: "i128" }),
+          nativeToScVal(params.poolId, { type: "u32" }),
           xdr.ScVal.scvBytes(Buffer.from(commitmentBytes))
         )
       );
@@ -143,29 +173,35 @@ export async function depositToVault(params: {
   );
   const after = await waitForLeafCountIncrease(
     params.sourcePublicKey,
+    params.poolId,
     before
   );
   return { txHash, leafIndex: Math.max(0, after - 1) };
 }
 
 export function encodePublicInputs(params: {
+  poolId: number;
   merkleRootHex: string;
   nullifierHexes: string[];
   newCommitmentHexes: string[];
   publicAmount: string;
+  relayerFeeStroops?: string;
 }): Uint8Array {
   const pad = (hexes: string[]) => {
     const out = [...hexes];
     while (out.length < 4) out.push("0x0");
     return out.slice(0, 4);
   };
+  const relayerFee = params.relayerFeeStroops ?? "0";
   const chunks = [
+    fieldDecToBytes32(params.poolId.toString()),
     fieldHexToBytes32(params.merkleRootHex),
     ...pad(params.nullifierHexes).map(fieldHexToBytes32),
     ...pad(params.newCommitmentHexes).map(fieldHexToBytes32),
     fieldDecToBytes32(params.publicAmount),
+    fieldDecToBytes32(relayerFee),
   ];
-  const out = new Uint8Array(320);
+  const out = new Uint8Array(384);
   chunks.forEach((chunk, i) => out.set(chunk, i * 32));
   return out;
 }
@@ -198,6 +234,7 @@ export async function registerShieldedKeyOnVault(params: {
 export async function shieldedTransferToVault(params: {
   sourcePublicKey: string;
   signTransaction: (xdr: string) => Promise<string>;
+  poolId: number;
   nullifierHexes: string[];
   newCommitmentHexes: string[];
   merkleRootHex: string;
@@ -233,6 +270,7 @@ export async function shieldedTransferToVault(params: {
   }
 
   const args = [
+    nativeToScVal(params.poolId, { type: "u32" }),
     ...nullifiers.map((h) => xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(h)))),
     ...commitments.map((h) => xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(h)))),
     xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.merkleRootHex))),
@@ -264,9 +302,60 @@ function normalizeHex(hex: string): string {
   return (hex.startsWith("0x") ? hex : `0x${hex}`).toLowerCase();
 }
 
+export async function exitPoolOnVault(params: {
+  sourcePublicKey: string;
+  signTransaction: (xdr: string) => Promise<string>;
+  poolId: number;
+  recipient: string;
+  relayer: string;
+  relayerFeeStroops: number;
+  nullifierHexes: string[];
+  merkleRootHex: string;
+  publicInputs: Uint8Array;
+  proofBytes: Uint8Array;
+}): Promise<string> {
+  const padHex = (hexes: string[]) => {
+    const out = [...hexes];
+    while (out.length < 4) out.push("0x0");
+    return out.slice(0, 4);
+  };
+  const nullifiers = padHex(params.nullifierHexes);
+  const recipient = new Address(params.recipient);
+  const relayer = new Address(params.relayer);
+
+  return signAndSend(
+    params.sourcePublicKey,
+    async (source) => {
+      const contract = new Contract(requireVaultId());
+      return new TransactionBuilder(source, {
+        fee: "1000000",
+        networkPassphrase: networkPassphrase(),
+      }).addOperation(
+        contract.call(
+          "exit_pool",
+          nativeToScVal(params.poolId, { type: "u32" }),
+          recipient.toScVal(),
+          relayer.toScVal(),
+          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(nullifiers[0]!))),
+          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(nullifiers[1]!))),
+          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(nullifiers[2]!))),
+          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(nullifiers[3]!))),
+          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.merkleRootHex))),
+          xdr.ScVal.scvBytes(Buffer.from(params.publicInputs)),
+          xdr.ScVal.scvBytes(Buffer.from(params.proofBytes)),
+          nativeToScVal(params.relayerFeeStroops, { type: "u32" })
+        )
+      );
+    },
+    params.signTransaction
+  );
+}
+
+/** @deprecated use exitPoolOnVault */
 export async function withdrawFromVault(params: {
   sourcePublicKey: string;
   signTransaction: (xdr: string) => Promise<string>;
+  poolId: number;
   recipient: string;
   amountStroops: bigint;
   nullifierHex: string;
@@ -274,26 +363,5 @@ export async function withdrawFromVault(params: {
   publicInputs: Uint8Array;
   proofBytes: Uint8Array;
 }): Promise<string> {
-  return signAndSend(
-    params.sourcePublicKey,
-    async (source) => {
-      const contract = new Contract(requireVaultId());
-      const to = new Address(params.recipient);
-      return new TransactionBuilder(source, {
-        fee: "1000000",
-        networkPassphrase: networkPassphrase(),
-      }).addOperation(
-        contract.call(
-          "withdraw",
-          to.toScVal(),
-          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.nullifierHex))),
-          nativeToScVal(params.amountStroops, { type: "i128" }),
-          xdr.ScVal.scvBytes(Buffer.from(fieldHexToBytes32(params.merkleRootHex))),
-          xdr.ScVal.scvBytes(Buffer.from(params.publicInputs)),
-          xdr.ScVal.scvBytes(Buffer.from(params.proofBytes))
-        )
-      );
-    },
-    params.signTransaction
-  );
+  throw new Error("withdraw removed — use exitPoolOnVault (Phase C)");
 }

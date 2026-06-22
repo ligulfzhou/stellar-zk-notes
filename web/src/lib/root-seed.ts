@@ -29,6 +29,23 @@ function bytesToFieldDecimal(seed: Uint8Array, info: string): string {
   return (value % BN254_FR_MODULUS).toString();
 }
 
+/** Deterministic deposit secret from root seed + monotonic index (enables rescan). */
+export function deriveDepositSecretFromSeed(
+  seed: Uint8Array,
+  derivationIndex: number
+): Uint8Array {
+  if (derivationIndex < 0) {
+    throw new Error("derivation index must be non-negative");
+  }
+  return hkdf(
+    sha256,
+    seed,
+    NOTE_HKDF_SALT,
+    new TextEncoder().encode(`zk-notes/deposit/${derivationIndex}`),
+    32
+  );
+}
+
 /** Deterministic note secrets from root seed + monotonic index. */
 export function deriveNoteSecretsFromSeed(
   seed: Uint8Array,

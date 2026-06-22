@@ -1,23 +1,37 @@
-import { computeCommitmentsBatch, computeNullifier } from "./commitment-client";
+import {
+  computeCommitmentsV2Batch,
+  computeNullifier,
+  depositSecretToHex,
+} from "./commitment-client";
 import { hexEquals } from "./bytes";
 import { createNote } from "./note";
 import type { Note, StoredNoteVault } from "./note-types";
 import { defaultVault } from "./note-types";
-import { deriveNoteSecretsFromSeed } from "./root-seed";
+import {
+  deriveDepositSecretFromSeed,
+  deriveNoteSecretsFromSeed,
+} from "./root-seed";
+import { poolById } from "./pool-config";
 import {
   fetchVaultChainState,
   isNullifierSpentOnChain,
 } from "./vault-events-client";
-import type { VaultDepositEvent } from "./vault-events";
+import type { VaultJoinEvent } from "./vault-events";
+import { joinEventAmountStroops } from "./vault-events";
 
 const DEFAULT_MAX_DERIVATION_SCAN = 1024;
 const BATCH_SIZE = 16;
 
-type DeriveFn = (index: number) => { secret: string; nullifierSecret: string };
+type DeriveFn = (index: number) => {
+  secret: string;
+  nullifierSecret: string;
+  depositSecret: Uint8Array;
+};
 
 async function findDerivationIndex(params: {
   deriveAt: DeriveFn;
   amount: bigint;
+  poolId: number;
   commitment: string;
   usedIndices: Set<number>;
   maxScan: number;
@@ -28,17 +42,19 @@ async function findDerivationIndex(params: {
     const batch = [];
     for (let i = start; i < end; i++) {
       if (params.usedIndices.has(i)) continue;
-      const { secret, nullifierSecret } = params.deriveAt(i);
+      const { secret, nullifierSecret, depositSecret } = params.deriveAt(i);
       batch.push({
         id: String(i),
         value: params.amount.toString(),
         secret,
         nullifierSecret,
+        depositSecret,
+        poolId: params.poolId,
       });
     }
     if (batch.length === 0) continue;
     params.onProgress?.(end, params.maxScan);
-    const commitments = await computeCommitmentsBatch(batch);
+    const commitments = await computeCommitmentsV2Batch(batch);
     for (const [id, computed] of Object.entries(commitments)) {
       if (hexEquals(computed, params.commitment)) {
         return Number(id);
@@ -61,12 +77,12 @@ function mergeIncomingNotes(rescanned: Note[], existing: Note[]): Note[] {
 
 export type RescanResult = {
   vault: StoredNoteVault;
-  depositsMatched: number;
-  depositsSkipped: number;
+  joinsMatched: number;
+  joinsSkipped: number;
   eventsParsed: number;
 };
 
-/** Rebuild local vault from chain events + unlocked passkey root. */
+/** Rebuild local vault from chain join events + unlocked passkey root. */
 export async function rescanVaultFromChain(params: {
   ownerPubkey: string;
   rootSeed: Uint8Array;
@@ -79,26 +95,31 @@ export async function rescanVaultFromChain(params: {
 
   const chainState = await fetchVaultChainState({
     reader: params.ownerPubkey,
-    localCommitments: existing.chainCommitments,
+    localPoolCommitments: existing.poolChainCommitments,
+    notes: existing.notes,
   });
   const events = chainState.events;
-  const chainCommitments = chainState.commitments;
-  const myDeposits = events.filter(
-    (e): e is VaultDepositEvent =>
-      e.kind === "deposit" && e.depositor === params.ownerPubkey
-  );
+  const poolChainCommitments = chainState.poolCommitments;
+  const joinEvents = events.filter((e): e is VaultJoinEvent => e.kind === "join");
 
   const usedIndices = new Set<number>();
   const notes: Note[] = [];
-  let depositsMatched = 0;
-  let depositsSkipped = 0;
+  let joinsMatched = 0;
+  let joinsSkipped = 0;
 
-  for (const deposit of myDeposits) {
-    params.onProgress?.("Matching passkey-derived indices…");
+  for (const join of joinEvents) {
+    params.onProgress?.(
+      `Matching passkey indices for pool ${poolById(join.poolId).label}…`
+    );
+    const amount = joinEventAmountStroops(join);
     const derivationIndex = await findDerivationIndex({
-      deriveAt: (i) => deriveNoteSecretsFromSeed(params.rootSeed, i),
-      amount: deposit.amount,
-      commitment: deposit.commitment,
+      deriveAt: (i) => ({
+        ...deriveNoteSecretsFromSeed(params.rootSeed, i),
+        depositSecret: deriveDepositSecretFromSeed(params.rootSeed, i),
+      }),
+      amount,
+      poolId: join.poolId,
+      commitment: join.commitment,
       usedIndices,
       maxScan,
       onProgress: (c, t) =>
@@ -106,7 +127,7 @@ export async function rescanVaultFromChain(params: {
     });
 
     if (derivationIndex === null) {
-      depositsSkipped += 1;
+      joinsSkipped += 1;
       continue;
     }
 
@@ -115,19 +136,25 @@ export async function rescanVaultFromChain(params: {
       params.rootSeed,
       derivationIndex
     );
+    const depositSecret = deriveDepositSecretFromSeed(
+      params.rootSeed,
+      derivationIndex
+    );
 
     const note = await createNote({
-      valueStroops: deposit.amount,
+      valueStroops: amount,
+      poolId: join.poolId,
       ownerPubkey: params.ownerPubkey,
       secret,
       nullifierSecret,
-      commitmentHex: deposit.commitment,
-      leafIndex: deposit.leafIndex,
+      depositSecretHex: depositSecretToHex(depositSecret),
+      commitmentHex: join.commitment,
+      leafIndex: join.leafIndex,
       derivationIndex,
     });
 
     try {
-      const nullifier = await computeNullifier(nullifierSecret, deposit.commitment);
+      const nullifier = await computeNullifier(nullifierSecret, join.commitment);
       const spent = await isNullifierSpentOnChain(nullifier, params.ownerPubkey);
       if (spent) note.status = "spent";
     } catch {
@@ -135,7 +162,7 @@ export async function rescanVaultFromChain(params: {
     }
 
     notes.push(note);
-    depositsMatched += 1;
+    joinsMatched += 1;
   }
 
   const mergedNotes = mergeIncomingNotes(notes, existing.notes);
@@ -148,16 +175,16 @@ export async function rescanVaultFromChain(params: {
 
   const vault: StoredNoteVault = {
     ...existing,
-    version: 3,
+    version: 4,
     nextDerivationIndex,
     notes: mergedNotes,
-    chainCommitments,
+    poolChainCommitments,
   };
 
   return {
     vault,
-    depositsMatched,
-    depositsSkipped,
+    joinsMatched,
+    joinsSkipped,
     eventsParsed: events.length,
   };
 }

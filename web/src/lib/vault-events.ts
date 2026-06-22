@@ -8,22 +8,31 @@ import {
 } from "@stellar/stellar-sdk";
 import { bytesToHex0x, normalizeHex } from "./bytes";
 import { formatError } from "./format-error";
+import { emptyPoolChainCommitments, POOL_COUNT, poolById } from "./pool-config";
 import { SOROBAN_RPC_URL, STELLAR_NETWORK, VAULT_CONTRACT_ID } from "./config";
 
-export type VaultDepositEvent = {
-  kind: "deposit";
+export type VaultJoinEvent = {
+  kind: "join";
+  poolId: number;
   ledger: number;
   txHash: string;
-  depositor: string;
   commitment: string;
   leafIndex: number;
-  amount: bigint;
+};
+
+export type VaultExitEvent = {
+  kind: "exit";
+  poolId: number;
+  ledger: number;
+  txHash: string;
+  nullifier: string;
 };
 
 export type VaultShieldedSendEvent = {
   kind: "shielded_send";
   ledger: number;
   txHash: string;
+  poolId: number;
   nullifier: string;
   newCommitment: string;
   leafIndex: number;
@@ -31,7 +40,10 @@ export type VaultShieldedSendEvent = {
   encryptedNote: Uint8Array;
 };
 
-export type VaultChainEvent = VaultDepositEvent | VaultShieldedSendEvent;
+export type VaultChainEvent =
+  | VaultJoinEvent
+  | VaultShieldedSendEvent
+  | VaultExitEvent;
 
 function rpcServer(): rpc.Server {
   return new rpc.Server(SOROBAN_RPC_URL, {
@@ -57,13 +69,6 @@ function normalizeAddress(value: unknown): string | null {
     if (typeof obj.address === "string") return obj.address;
     if (typeof obj.accountId === "string") return obj.accountId;
   }
-  return null;
-}
-
-function normalizeAmount(value: unknown): bigint | null {
-  if (typeof value === "bigint") return value;
-  if (typeof value === "number") return BigInt(value);
-  if (typeof value === "string" && value) return BigInt(value);
   return null;
 }
 
@@ -95,20 +100,49 @@ function parseVaultEvent(
   const record = normalizeRecord(value);
   if (!record) return null;
 
-  const depositor = normalizeAddress(record.depositor);
+  const poolIdRaw = record.pool_id ?? record.poolId;
   const commitment = normalizeBytesHex(record.commitment);
   const leafIndex = record.leaf_index ?? record.leafIndex;
-  const amount = normalizeAmount(record.amount);
 
-  if (depositor && commitment && leafIndex !== undefined && amount !== null) {
+  if (
+    poolIdRaw !== undefined &&
+    commitment &&
+    leafIndex !== undefined &&
+    normalizeAddress(record.depositor) === null &&
+    record.amount === undefined
+  ) {
+    const poolId = Number(poolIdRaw);
+    if (poolId >= 0 && poolId < POOL_COUNT) {
+      return {
+        kind: "join",
+        poolId,
+        ledger,
+        txHash,
+        commitment: normalizeHex(commitment),
+        leafIndex: Number(leafIndex),
+      };
+    }
+  }
+
+  const exitNullifier = normalizeBytesHex(record.nullifier);
+  if (
+    exitNullifier &&
+    poolIdRaw !== undefined &&
+    normalizeAddress(record.recipient) === null &&
+    record.amount === undefined &&
+    record.new_commitment === undefined &&
+    record.newCommitment === undefined &&
+    record.exit_hash === undefined &&
+    record.exitHash === undefined &&
+    record.encrypted_note === undefined &&
+    record.encryptedNote === undefined
+  ) {
     return {
-      kind: "deposit",
+      kind: "exit",
+      poolId: Number(poolIdRaw),
       ledger,
       txHash,
-      depositor,
-      commitment: normalizeHex(commitment),
-      leafIndex: Number(leafIndex),
-      amount,
+      nullifier: normalizeHex(exitNullifier),
     };
   }
 
@@ -127,6 +161,7 @@ function parseVaultEvent(
   }
 
   if (nullifier && newCommitment && sendLeafIndex !== undefined) {
+    const poolId = poolIdRaw !== undefined ? Number(poolIdRaw) : 0;
     return {
       kind: "shielded_send",
       ledger,
@@ -136,6 +171,7 @@ function parseVaultEvent(
       leafIndex: Number(sendLeafIndex),
       epk: epk ? normalizeHex(epk) : "0x" + "00".repeat(32),
       encryptedNote: encryptedNote ?? new Uint8Array(),
+      poolId,
     };
   }
 
@@ -202,93 +238,145 @@ export async function fetchVaultChainEvents(): Promise<VaultChainEvent[]> {
   return parsed;
 }
 
-/** Rebuild on-chain commitment list in Merkle insertion order (index = leaf slot). */
-export function rebuildChainCommitments(events: VaultChainEvent[]): string[] {
-  const slots: string[] = [];
+/** Rebuild per-pool commitment lists in Merkle insertion order. */
+export function rebuildPoolChainCommitments(
+  events: VaultChainEvent[]
+): string[][] {
+  const pools = emptyPoolChainCommitments();
 
   for (const event of events) {
-    const commitment =
-      event.kind === "deposit" ? event.commitment : event.newCommitment;
-    while (slots.length <= event.leafIndex) slots.push("");
-    slots[event.leafIndex] = commitment;
+    if (event.kind === "join") {
+      const slots = pools[event.poolId]!;
+      while (slots.length <= event.leafIndex) slots.push("");
+      slots[event.leafIndex] = event.commitment;
+    } else if (event.kind === "shielded_send") {
+      const slots = pools[event.poolId]!;
+      while (slots.length <= event.leafIndex) slots.push("");
+      slots[event.leafIndex] = event.newCommitment;
+    }
   }
 
-  while (slots.length > 0 && slots[slots.length - 1] === "") {
-    slots.pop();
+  for (const slots of pools) {
+    while (slots.length > 0 && slots[slots.length - 1] === "") {
+      slots.pop();
+    }
   }
-  return slots;
+  return pools;
 }
 
-/** Place a commitment at its on-chain leaf index (never append-only). */
+/** @deprecated use rebuildPoolChainCommitments */
+export function rebuildChainCommitments(events: VaultChainEvent[]): string[] {
+  return rebuildPoolChainCommitments(events)[0] ?? [];
+}
+
+/** Place a commitment at its on-chain leaf index within a pool tree. */
+export function upsertPoolChainCommitment(
+  pools: string[][],
+  poolId: number,
+  leafIndex: number,
+  commitment: string
+): string[][] {
+  const updated = pools.map((p) => [...p]);
+  while (updated.length <= poolId) {
+    updated.push([]);
+  }
+  const chain = updated[poolId]!;
+  while (chain.length <= leafIndex) {
+    chain.push("");
+  }
+  chain[leafIndex] = commitment;
+  while (chain.length > 0 && chain[chain.length - 1] === "") {
+    chain.pop();
+  }
+  updated[poolId] = chain;
+  return updated;
+}
+
+/** @deprecated use upsertPoolChainCommitment */
 export function upsertChainCommitment(
   chain: string[],
   leafIndex: number,
   commitment: string
 ): string[] {
-  const updated = [...chain];
-  while (updated.length <= leafIndex) {
-    updated.push("");
-  }
-  updated[leafIndex] = commitment;
-  while (updated.length > 0 && updated[updated.length - 1] === "") {
-    updated.pop();
-  }
-  return updated;
+  return upsertPoolChainCommitment([chain], 0, leafIndex, commitment)[0]!;
 }
 
 /** Merge local vault commitments with a (possibly partial) chain scan. */
+export function mergePoolChainCommitments(
+  local: string[][],
+  remote: string[][],
+  leafCounts?: Array<number | null>
+): string[][] {
+  const merged = emptyPoolChainCommitments();
+  for (let poolId = 0; poolId < POOL_COUNT; poolId++) {
+    const size = Math.max(
+      leafCounts?.[poolId] ?? 0,
+      remote[poolId]?.length ?? 0,
+      local[poolId]?.length ?? 0
+    );
+    const slots: string[] = [];
+    const placed = new Set<string>();
+
+    for (let i = 0; i < size; i++) {
+      const r = remote[poolId]?.[i] ?? "";
+      slots.push(r);
+      if (r) placed.add(normalizeHex(r));
+    }
+
+    for (let i = 0; i < (local[poolId]?.length ?? 0); i++) {
+      const commitment = local[poolId]?.[i];
+      if (!commitment) continue;
+      const norm = normalizeHex(commitment);
+      if (placed.has(norm)) continue;
+      while (slots.length <= i) slots.push("");
+      if (!slots[i]) {
+        slots[i] = commitment;
+        placed.add(norm);
+      }
+    }
+
+    while (slots.length > 0 && slots[slots.length - 1] === "") {
+      slots.pop();
+    }
+    merged[poolId] = slots;
+  }
+  return merged;
+}
+
+/** @deprecated use mergePoolChainCommitments */
 export function mergeChainCommitments(
   local: string[],
   remote: string[],
   leafCount?: number | null
 ): string[] {
-  const size = Math.max(leafCount ?? 0, remote.length, local.length);
-  const merged: string[] = [];
-  const placed = new Set<string>();
-
-  for (let i = 0; i < size; i++) {
-    const r = remote[i] ?? "";
-    merged.push(r);
-    if (r) placed.add(normalizeHex(r));
-  }
-
-  for (let i = 0; i < local.length; i++) {
-    const commitment = local[i];
-    if (!commitment) continue;
-    const norm = normalizeHex(commitment);
-    if (placed.has(norm)) continue;
-    while (merged.length <= i) merged.push("");
-    if (!merged[i]) {
-      merged[i] = commitment;
-      placed.add(norm);
-    }
-  }
-
-  while (merged.length > 0 && merged[merged.length - 1] === "") {
-    merged.pop();
-  }
-  return merged;
+  return mergePoolChainCommitments([local], [remote], [leafCount ?? null])[0]!;
 }
 
 export function seedCommitmentsFromNotes(
-  commitments: string[],
-  notes: Array<{ leafIndex: number; commitment: string }>,
-  leafCount?: number | null
-): string[] {
-  const size = Math.max(leafCount ?? 0, commitments.length);
-  const merged = [...commitments];
-  while (merged.length < size) merged.push("");
+  pools: string[][],
+  notes: Array<{ leafIndex: number; commitment: string; poolId?: number }>,
+  leafCounts?: Array<number | null>
+): string[][] {
+  const merged = pools.map((p) => [...p]);
+  for (let poolId = 0; poolId < POOL_COUNT; poolId++) {
+    const size = Math.max(leafCounts?.[poolId] ?? 0, merged[poolId]!.length);
+    while (merged[poolId]!.length < size) merged[poolId]!.push("");
+  }
 
   for (const note of notes) {
     if (!note.commitment) continue;
-    while (merged.length <= note.leafIndex) merged.push("");
-    if (!merged[note.leafIndex]) {
-      merged[note.leafIndex] = note.commitment;
+    const poolId = note.poolId ?? 0;
+    while (merged.length <= poolId) merged.push([]);
+    while (merged[poolId]!.length <= note.leafIndex) merged[poolId]!.push("");
+    if (!merged[poolId]![note.leafIndex]) {
+      merged[poolId]![note.leafIndex] = note.commitment;
     }
   }
 
-  while (merged.length > 0 && merged[merged.length - 1] === "") {
-    merged.pop();
+  for (const slots of merged) {
+    while (slots.length > 0 && slots[slots.length - 1] === "") {
+      slots.pop();
+    }
   }
   return merged;
 }
@@ -314,6 +402,10 @@ export function denseCommitmentSlots(
     slots.push(commitments[i] ?? "");
   }
   return slots;
+}
+
+export function joinEventAmountStroops(event: VaultJoinEvent): bigint {
+  return poolById(event.poolId).stroops;
 }
 
 export async function isNullifierSpentOnChain(

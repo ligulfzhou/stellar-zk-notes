@@ -1,10 +1,20 @@
-import { computeCommitment, computeNullifier } from "./commitment-client";
+import {
+  computeCommitmentV2,
+  depositSecretFromHex,
+  depositSecretToField,
+  randomDepositSecret,
+} from "./commitment-v2";
+import { computeNullifier } from "./commitment-client";
 import {
   fieldHexListToBigInt,
   merkleWitness,
   merkleWitnessFromTreeState,
   type VaultTreeState,
 } from "./merkle-witness-client";
+import { poolById } from "./pool-config";
+import { deriveDepositSecretFromSeed } from "./root-seed";
+import type { Note } from "./note-types";
+import { usePasskeyStore } from "@/store/usePasskeyStore";
 
 export const MAX_ACTION_SLOTS = 4;
 
@@ -12,15 +22,19 @@ export type TransferWitnessPayload = {
   spend_value: string[];
   spend_secret: string[];
   spend_nullifier_secret: string[];
+  spend_deposit_secret: string[];
   spend_merkle_path: string[][];
   spend_path_indices: boolean[][];
   out_value: string[];
   out_secret: string[];
   out_nullifier_secret: string[];
+  out_deposit_secret: string[];
+  pool_id: string;
   merkle_root: string;
   nullifier: string[];
   new_commitment: string[];
   public_amount: string;
+  relayer_fee: string;
 };
 
 /** @deprecated use TransferWitnessPayload */
@@ -50,6 +64,16 @@ function emptyMerklePath(): string[] {
 
 function emptyPathIndices(): boolean[] {
   return Array(16).fill(false);
+}
+
+function resolveDepositSecretBytes(note: Note, rootSeed: Uint8Array | null): Uint8Array {
+  if (note.depositSecretHex) {
+    return depositSecretFromHex(note.depositSecretHex);
+  }
+  if (note.derivationIndex !== undefined && rootSeed) {
+    return deriveDepositSecretFromSeed(rootSeed, note.derivationIndex);
+  }
+  return new Uint8Array(32);
 }
 
 async function buildMerkleWitness(params: {
@@ -95,6 +119,8 @@ async function buildInputSlot(params: {
   value: string;
   secret: string;
   nullifierSecret: string;
+  depositSecret: Uint8Array;
+  poolId: number;
   leafIndex: number;
   leafCount: number;
   commitments: string[];
@@ -102,11 +128,13 @@ async function buildInputSlot(params: {
   treeState?: VaultTreeState | null;
   onChainMerkleRoot?: string;
 }) {
-  const spendCommitmentHex = await computeCommitment(
-    params.value,
-    params.secret,
-    params.nullifierSecret
-  );
+  const spendCommitmentHex = await computeCommitmentV2({
+    valueStroops: BigInt(params.value),
+    secret: params.secret,
+    nullifierSecret: params.nullifierSecret,
+    depositSecret: params.depositSecret,
+    poolId: params.poolId,
+  });
 
   if (
     params.noteCommitment &&
@@ -151,10 +179,12 @@ export type TransferWitnessResult = {
 
 /** Build witness for shielded send (1-4 inputs, 1-4 outputs). */
 export async function buildTransferWitness(params: {
+  poolId: number;
   inputs: Array<{
     value: string;
     secret: string;
     nullifierSecret: string;
+    depositSecret: Uint8Array;
     leafIndex: number;
     commitment?: string;
   }>;
@@ -162,6 +192,7 @@ export async function buildTransferWitness(params: {
     value: string;
     secret: string;
     nullifierSecret: string;
+    depositSecret: Uint8Array;
   }>;
   leafCount: number;
   commitments: string[];
@@ -184,6 +215,7 @@ export async function buildTransferWitness(params: {
   const spendValues: string[] = [];
   const spendSecrets: string[] = [];
   const spendNullifierSecrets: string[] = [];
+  const spendDepositSecrets: string[] = [];
   const merklePaths: string[][] = [];
   const pathIndices: boolean[][] = [];
   const nullifierDecimals: string[] = [];
@@ -193,6 +225,7 @@ export async function buildTransferWitness(params: {
     const note = params.inputs[i]!;
     const slot = await buildInputSlot({
       ...note,
+      poolId: params.poolId,
       leafCount: params.leafCount,
       commitments: params.commitments,
       treeState: params.treeState,
@@ -201,6 +234,7 @@ export async function buildTransferWitness(params: {
     spendValues.push(note.value);
     spendSecrets.push(note.secret);
     spendNullifierSecrets.push(note.nullifierSecret);
+    spendDepositSecrets.push(depositSecretToField(note.depositSecret));
     merklePaths.push(slot.path.map((p) => p.toString()));
     pathIndices.push(slot.indices);
     nullifierDecimals.push(fieldHexToDecimal(slot.nullifierHex));
@@ -215,13 +249,21 @@ export async function buildTransferWitness(params: {
   const outValues: string[] = [];
   const outSecrets: string[] = [];
   const outNullifierSecrets: string[] = [];
+  const outDepositSecrets: string[] = [];
   const newCommitmentHexes: string[] = [];
 
   for (const out of params.outputs) {
-    const nc = await computeCommitment(out.value, out.secret, out.nullifierSecret);
+    const nc = await computeCommitmentV2({
+      valueStroops: BigInt(out.value),
+      secret: out.secret,
+      nullifierSecret: out.nullifierSecret,
+      depositSecret: out.depositSecret,
+      poolId: params.poolId,
+    });
     outValues.push(out.value);
     outSecrets.push(out.secret);
     outNullifierSecrets.push(out.nullifierSecret);
+    outDepositSecrets.push(depositSecretToField(out.depositSecret));
     newCommitmentHexes.push(nc);
   }
 
@@ -229,6 +271,7 @@ export async function buildTransferWitness(params: {
     spend_value: pad4(spendValues),
     spend_secret: pad4(spendSecrets),
     spend_nullifier_secret: pad4(spendNullifierSecrets),
+    spend_deposit_secret: pad4(spendDepositSecrets),
     spend_merkle_path: [
       ...merklePaths,
       ...Array(MAX_ACTION_SLOTS - merklePaths.length).fill(emptyMerklePath()),
@@ -240,10 +283,13 @@ export async function buildTransferWitness(params: {
     out_value: pad4(outValues),
     out_secret: pad4(outSecrets),
     out_nullifier_secret: pad4(outNullifierSecrets),
+    out_deposit_secret: pad4(outDepositSecrets),
+    pool_id: params.poolId.toString(),
     merkle_root: BigInt(merkleRootHex).toString(),
     nullifier: pad4(nullifierDecimals),
     new_commitment: pad4(newCommitmentHexes.map((h) => BigInt(h).toString())),
     public_amount: "0",
+    relayer_fee: "0",
   };
 
   return {
@@ -254,11 +300,14 @@ export async function buildTransferWitness(params: {
   };
 }
 
-/** Build witness for 1-in withdraw to public address. */
-export async function buildWithdrawWitness(params: {
+/** Build witness for pool exit (1-in, public_amount = pool join amount). */
+export async function buildExitWitness(params: {
+  poolId: number;
   value: string;
   secret: string;
   nullifierSecret: string;
+  depositSecret: Uint8Array;
+  relayerFeeStroops: string;
   leafIndex: number;
   leafCount: number;
   commitments: string[];
@@ -266,21 +315,52 @@ export async function buildWithdrawWitness(params: {
   treeState?: VaultTreeState | null;
   noteCommitment?: string;
 }): Promise<TransferWitnessResult> {
-  const slot = await buildInputSlot(params);
+  const joinAmount = poolById(params.poolId).stroops.toString();
+  if (params.value !== joinAmount) {
+    throw new Error("Exit note value must match pool denomination");
+  }
+
+  const slot = await buildInputSlot({
+    value: params.value,
+    secret: params.secret,
+    nullifierSecret: params.nullifierSecret,
+    depositSecret: params.depositSecret,
+    poolId: params.poolId,
+    leafIndex: params.leafIndex,
+    leafCount: params.leafCount,
+    commitments: params.commitments,
+    noteCommitment: params.noteCommitment,
+    treeState: params.treeState,
+    onChainMerkleRoot: params.onChainMerkleRoot,
+  });
 
   const witness: TransferWitnessPayload = {
     spend_value: pad4([params.value]),
     spend_secret: pad4([params.secret]),
     spend_nullifier_secret: pad4([params.nullifierSecret]),
-    spend_merkle_path: [slot.path.map((p) => p.toString()), emptyMerklePath(), emptyMerklePath(), emptyMerklePath()],
-    spend_path_indices: [slot.indices, emptyPathIndices(), emptyPathIndices(), emptyPathIndices()],
+    spend_deposit_secret: pad4([depositSecretToField(params.depositSecret)]),
+    spend_merkle_path: [
+      slot.path.map((p) => p.toString()),
+      emptyMerklePath(),
+      emptyMerklePath(),
+      emptyMerklePath(),
+    ],
+    spend_path_indices: [
+      slot.indices,
+      emptyPathIndices(),
+      emptyPathIndices(),
+      emptyPathIndices(),
+    ],
     out_value: pad4([]),
     out_secret: pad4([]),
     out_nullifier_secret: pad4([]),
+    out_deposit_secret: pad4([]),
+    pool_id: params.poolId.toString(),
     merkle_root: slot.root.toString(),
     nullifier: pad4([fieldHexToDecimal(slot.nullifierHex)]),
     new_commitment: pad4([]),
-    public_amount: params.value,
+    public_amount: joinAmount,
+    relayer_fee: params.relayerFeeStroops,
   };
 
   const merkleRootHex = "0x" + slot.root.toString(16).padStart(64, "0");
@@ -292,7 +372,47 @@ export async function buildWithdrawWitness(params: {
   };
 }
 
-/** @deprecated use buildTransferWitness / buildWithdrawWitness */
+export function depositSecretBytesForNote(note: Note): Uint8Array {
+  const rootSeed = usePasskeyStore.getState().rootSeed;
+  return resolveDepositSecretBytes(note, rootSeed);
+}
+
+/** Resolve deposit secret field for a note (passkey-derived or stored). */
+export function depositSecretFieldForNote(note: Note): string {
+  return depositSecretToField(depositSecretBytesForNote(note));
+}
+
+/** @deprecated use buildExitWitness */
+export async function buildWithdrawWitness(params: {
+  value: string;
+  secret: string;
+  nullifierSecret: string;
+  leafIndex: number;
+  leafCount: number;
+  commitments: string[];
+  onChainMerkleRoot?: string;
+  treeState?: VaultTreeState | null;
+  noteCommitment?: string;
+  poolId?: number;
+}): Promise<TransferWitnessResult> {
+  const poolId = params.poolId ?? 0;
+  return buildExitWitness({
+    poolId,
+    value: params.value,
+    secret: params.secret,
+    nullifierSecret: params.nullifierSecret,
+    depositSecret: new Uint8Array(32),
+    relayerFeeStroops: "0",
+    leafIndex: params.leafIndex,
+    leafCount: params.leafCount,
+    commitments: params.commitments,
+    onChainMerkleRoot: params.onChainMerkleRoot,
+    treeState: params.treeState,
+    noteCommitment: params.noteCommitment,
+  });
+}
+
+/** @deprecated use buildTransferWitness / buildExitWitness */
 export async function buildSpendWitness(params: {
   mode: "shielded_send" | "withdraw";
   value: string;
@@ -306,6 +426,7 @@ export async function buildSpendWitness(params: {
   noteCommitment?: string;
   newSecret?: string;
   newNullifierSecret?: string;
+  poolId?: number;
 }): Promise<{
   witness: TransferWitnessPayload;
   merkleRootHex: string;
@@ -328,12 +449,15 @@ export async function buildSpendWitness(params: {
   if (!params.newSecret || !params.newNullifierSecret) {
     throw new Error("newSecret and newNullifierSecret required for send");
   }
+  const poolId = params.poolId ?? 0;
   const r = await buildTransferWitness({
+    poolId,
     inputs: [
       {
         value: params.value,
         secret: params.secret,
         nullifierSecret: params.nullifierSecret,
+        depositSecret: new Uint8Array(32),
         leafIndex: params.leafIndex,
         commitment: params.noteCommitment,
       },
@@ -343,6 +467,7 @@ export async function buildSpendWitness(params: {
         value: params.value,
         secret: params.newSecret,
         nullifierSecret: params.newNullifierSecret,
+        depositSecret: randomDepositSecret(),
       },
     ],
     leafCount: params.leafCount,
@@ -362,3 +487,5 @@ export async function buildSpendWitness(params: {
 
 /** @deprecated use buildTransferWitness */
 export const buildSpendWitness2x2 = buildTransferWitness;
+
+export { randomDepositSecret };

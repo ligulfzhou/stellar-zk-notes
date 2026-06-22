@@ -4,8 +4,8 @@ set -euo pipefail
 
 WITNESS_JSON="${1:?path to witness json required}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-CIRCUIT="$ROOT/circuits/transfer_actions"
-ARTIFACTS="$ROOT/artifacts/transfer_actions"
+CIRCUIT="$ROOT/circuits/pool_actions"
+ARTIFACTS="$ROOT/artifacts/pool_actions"
 BB_FLAGS=(--scheme ultra_honk --oracle_hash keccak --output_format bytes_and_fields)
 
 export PATH="${HOME}/.bb/bin:${HOME}/.nargo/bin:${PATH}"
@@ -16,11 +16,11 @@ if ! command -v bb >/dev/null 2>&1; then
 fi
 
 mkdir -p "$ARTIFACTS"
-"$ROOT/scripts/witness_transfer_actions.sh" "$WITNESS_JSON"
+"$ROOT/scripts/witness_pool_actions.sh" "$WITNESS_JSON"
 
 cd "$CIRCUIT"
-JSON="./target/transfer_actions.json"
-GZ="./target/transfer_actions.gz"
+JSON="./target/pool_actions.json"
+GZ="./target/pool_actions.gz"
 
 if [[ ! -f "$GZ" ]]; then
   echo "Missing witness $GZ — nargo execute failed?" >&2

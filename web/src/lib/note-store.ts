@@ -1,6 +1,7 @@
 import { del, get, set } from "idb-keyval";
 import type { Note, StoredNoteVault } from "./note";
 import { defaultVault, hasPasskey } from "./note-types";
+import { emptyPoolChainCommitments } from "./pool-config";
 import type { PasskeyVaultConfig } from "./passkey";
 import { deriveNoteSecretsFromSeed } from "./root-seed";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
@@ -20,25 +21,42 @@ type LegacyVault = {
   legacyMnemonic?: string | null;
   passkey?: PasskeyVaultConfig | null;
   nextDerivationIndex?: number;
-  notes?: Note[];
+  notes?: Array<Note & { poolId?: number }>;
   chainCommitments?: string[];
+  poolChainCommitments?: string[][];
 };
+
+function migrateNote(note: Note & { poolId?: number }): Note {
+  const { keySource: _ks, ...rest } = note as Note & { keySource?: string };
+  return {
+    ...rest,
+    poolId: rest.poolId ?? 0,
+  };
+}
 
 function migrateVault(raw: LegacyVault | StoredNoteVault | undefined): StoredNoteVault {
   if (!raw) return defaultVault();
-  if (raw.version === 3 && "passkey" in raw) {
+  if (raw.version === 4 && "poolChainCommitments" in raw) {
     return raw as StoredNoteVault;
   }
-  const notes = (raw.notes ?? []).map((n) => {
-    const { keySource: _ks, ...note } = n as Note & { keySource?: string };
-    return note;
-  });
+
+  const notes = (raw.notes ?? []).map(migrateNote);
+  const poolChainCommitments = emptyPoolChainCommitments();
+  const legacy = raw as LegacyVault;
+  if (legacy.poolChainCommitments) {
+    for (let i = 0; i < poolChainCommitments.length; i++) {
+      poolChainCommitments[i] = [...(legacy.poolChainCommitments[i] ?? [])];
+    }
+  } else if (legacy.chainCommitments?.length) {
+    poolChainCommitments[0] = [...legacy.chainCommitments];
+  }
+
   return {
-    version: 3,
+    version: 4,
     passkey: raw.passkey ?? null,
     nextDerivationIndex: raw.nextDerivationIndex ?? notes.length,
     notes,
-    chainCommitments: raw.chainCommitments ?? [],
+    poolChainCommitments,
   };
 }
 
@@ -88,7 +106,7 @@ async function migrateLegacyVaultIfNeeded(): Promise<void> {
       -1
     );
     const accountVault: StoredNoteVault = {
-      version: 3,
+      version: 4,
       passkey,
       nextDerivationIndex: Math.max(
         vault.nextDerivationIndex,
@@ -96,7 +114,7 @@ async function migrateLegacyVaultIfNeeded(): Promise<void> {
         notes.length
       ),
       notes,
-      chainCommitments: [...vault.chainCommitments],
+      poolChainCommitments: vault.poolChainCommitments.map((c) => [...c]),
     };
     await set(vaultKeyFor(pubkey), accountVault);
   }
@@ -124,8 +142,12 @@ export async function loadNotes(activePubkey: string): Promise<Note[]> {
   return (await loadVault(activePubkey)).notes;
 }
 
-export async function loadChainCommitments(activePubkey: string): Promise<string[]> {
-  return (await loadVault(activePubkey)).chainCommitments;
+export async function loadPoolChainCommitments(
+  activePubkey: string,
+  poolId = 0
+): Promise<string[]> {
+  const vault = await loadVault(activePubkey);
+  return vault.poolChainCommitments[poolId] ?? [];
 }
 
 export async function saveVault(
@@ -186,33 +208,33 @@ export async function deriveAndAllocateNoteSecrets(activePubkey: string): Promis
 type SerializedNote = Omit<Note, "value"> & { value: string };
 
 type SerializedVault = {
-  version: 3;
+  version: 4;
   passkey?: PasskeyVaultConfig | null;
   nextDerivationIndex?: number;
   notes: SerializedNote[];
-  chainCommitments: string[];
+  poolChainCommitments: string[][];
 };
 
 function serializeVault(vault: StoredNoteVault): SerializedVault {
   return {
-    version: 3,
+    version: 4,
     passkey: vault.passkey,
     nextDerivationIndex: vault.nextDerivationIndex,
     notes: vault.notes.map((n) => ({ ...n, value: n.value.toString() })),
-    chainCommitments: vault.chainCommitments,
+    poolChainCommitments: vault.poolChainCommitments.map((c) => [...c]),
   };
 }
 
 function deserializeVault(data: SerializedVault): StoredNoteVault {
-  if (data.version !== 3) {
-    throw new Error("Unsupported vault version — import v3 JSON only");
+  if (data.version !== 4) {
+    throw new Error("Unsupported vault version — import v4 JSON only");
   }
   return migrateVault({
-    version: 3,
+    version: 4,
     passkey: data.passkey ?? null,
     nextDerivationIndex: data.nextDerivationIndex ?? data.notes.length,
-    notes: data.notes.map((n) => ({ ...n, value: BigInt(n.value) })),
-    chainCommitments: data.chainCommitments ?? [],
+    notes: data.notes.map((n) => migrateNote({ ...n, value: BigInt(n.value) })),
+    poolChainCommitments: data.poolChainCommitments,
   });
 }
 
@@ -227,7 +249,7 @@ export async function exportVaultJson(activePubkey: string): Promise<string> {
 
 export function importVaultJson(json: string): StoredNoteVault {
   const parsed = JSON.parse(json) as SerializedVault | LegacyVault;
-  if ("version" in parsed && parsed.version === 3) {
+  if ("version" in parsed && parsed.version === 4) {
     return deserializeVault(parsed as SerializedVault);
   }
   return migrateVault(parsed as LegacyVault);

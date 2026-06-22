@@ -6,14 +6,14 @@ import { sumUnspentNotes, hasPasskey } from "@/lib/note";
 import { loadVault, saveVault } from "@/lib/note-store";
 import { connectWallet, getPublicKey } from "@/lib/wallet";
 
-type Tab = "dashboard" | "deposit" | "send" | "withdraw" | "notes";
+type Tab = "dashboard" | "join" | "send" | "exit" | "notes";
 
 interface WalletState {
   publicKey: string | null;
   connecting: boolean;
   error: string | null;
   notes: Note[];
-  chainCommitments: string[];
+  poolChainCommitments: string[][];
   hasPasskey: boolean;
   activeTab: Tab;
   shieldedBalance: bigint;
@@ -27,7 +27,7 @@ interface WalletState {
 function vaultToState(vault: StoredNoteVault) {
   return {
     notes: vault.notes,
-    chainCommitments: vault.chainCommitments,
+    poolChainCommitments: vault.poolChainCommitments,
     hasPasskey: hasPasskey(vault),
     shieldedBalance: sumUnspentNotes(vault.notes),
   };
@@ -35,7 +35,7 @@ function vaultToState(vault: StoredNoteVault) {
 
 const emptyAccountState = {
   notes: [] as Note[],
-  chainCommitments: [] as string[],
+  poolChainCommitments: [[], [], []] as string[][],
   hasPasskey: false,
   shieldedBalance: BigInt(0),
 };
@@ -45,7 +45,7 @@ export const useWalletStore = create<WalletState>((set, get) => ({
   connecting: false,
   error: null,
   notes: [],
-  chainCommitments: [],
+  poolChainCommitments: [[], [], []],
   hasPasskey: false,
   activeTab: "dashboard",
   shieldedBalance: BigInt(0),
@@ -107,12 +107,12 @@ function requireActivePubkey(): string {
 
 export async function persistVaultState(
   notes: Note[],
-  chainCommitments: string[]
+  poolChainCommitments: string[][]
 ) {
   const publicKey = requireActivePubkey();
   const vault = await loadVault(publicKey);
   vault.notes = notes;
-  vault.chainCommitments = chainCommitments;
+  vault.poolChainCommitments = poolChainCommitments;
   await saveVault(vault, publicKey);
   useWalletStore.setState(vaultToState(vault));
 }

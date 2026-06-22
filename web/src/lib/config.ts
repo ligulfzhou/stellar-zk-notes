@@ -22,3 +22,17 @@ export const NATIVE_XLM_SAC =
 /** @deprecated pre-Phase-B vaults only; current vault uses shielded_transfer (16 args). */
 export const VAULT_LEGACY_SEND =
   process.env.NEXT_PUBLIC_VAULT_LEGACY_SEND === "true";
+
+export const RELAYER_URL = process.env.NEXT_PUBLIC_RELAYER_URL ?? "";
+
+/** Relayer G address (optional; otherwise fetched from GET /info). */
+export const RELAYER_G = process.env.NEXT_PUBLIC_RELAYER_G ?? "";
+
+export const DEFAULT_RELAYER_FEE_STROOPS =
+  process.env.NEXT_PUBLIC_DEFAULT_RELAYER_FEE_STROOPS ?? "100000";
+
+/** `strict` — submit via relayer when URL set; `dev` — direct submit with UI warning */
+export type PrivacyMode = "strict" | "dev";
+
+export const PRIVACY_MODE: PrivacyMode =
+  process.env.NEXT_PUBLIC_PRIVACY_MODE === "dev" ? "dev" : "strict";

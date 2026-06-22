@@ -21,23 +21,28 @@ export function randomFieldDecimal(): string {
 }
 
 export function encodePublicInputs(params: {
+  poolId: number;
   merkleRootHex: string;
   nullifierHexes: string[];
   newCommitmentHexes: string[];
   publicAmount: string;
+  relayerFeeStroops?: string;
 }): Uint8Array {
   const pad = (hexes: string[]) => {
     const out = [...hexes];
     while (out.length < 4) out.push("0x0");
     return out.slice(0, 4);
   };
+  const relayerFee = params.relayerFeeStroops ?? "0";
   const chunks = [
+    fieldDecToBytes32(params.poolId.toString()),
     fieldHexToBytes32(params.merkleRootHex),
     ...pad(params.nullifierHexes).map(fieldHexToBytes32),
     ...pad(params.newCommitmentHexes).map(fieldHexToBytes32),
     fieldDecToBytes32(params.publicAmount),
+    fieldDecToBytes32(relayerFee),
   ];
-  const out = new Uint8Array(320);
+  const out = new Uint8Array(384);
   chunks.forEach((chunk, i) => out.set(chunk, i * 32));
   return out;
 }

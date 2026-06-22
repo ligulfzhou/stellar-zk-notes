@@ -14,12 +14,19 @@ function hexToBytes32(hex: string): Uint8Array {
   return out;
 }
 
-/** Read recipient X25519 pubkey from zk1 string or on-chain G… registry. */
+export function isX25519PubkeyHex(value: string): boolean {
+  const h = value.trim().replace(/^0x/i, "");
+  return /^[0-9a-fA-F]{64}$/.test(h);
+}
+
+/** Read recipient X25519 pubkey from zk1, pasted hex, or (legacy) on-chain G… registry. */
 export async function resolveReceivePubkey(params: {
   recipient: string;
   readerPublicKey: string;
   selfPublicKey: string | null;
   selfRootSeed: Uint8Array | null;
+  /** Phase C default: false — no on-chain G… lookup */
+  allowOnChainRegistry?: boolean;
 }): Promise<Uint8Array> {
   const recipient = params.recipient.trim();
 
@@ -29,8 +36,12 @@ export async function resolveReceivePubkey(params: {
     return parsed.publicKey;
   }
 
+  if (isX25519PubkeyHex(recipient)) {
+    return hexToBytes32(recipient);
+  }
+
   if (!recipient.startsWith("G") || recipient.length !== 56) {
-    throw new Error("Enter zk1… or a registered Stellar G… address");
+    throw new Error("Enter zk1… shielded address or paste recipient X25519 pubkey (64 hex chars)");
   }
 
   if (params.selfPublicKey === recipient) {
@@ -38,6 +49,12 @@ export async function resolveReceivePubkey(params: {
       throw new Error("Unlock passkey first");
     }
     return deriveShieldedReceiveKeysFromRoot(params.selfRootSeed).publicKey;
+  }
+
+  if (params.allowOnChainRegistry === false) {
+    throw new Error(
+      "On-chain G… lookup is disabled. Share your zk1 address or X25519 pubkey with the sender."
+    );
   }
 
   const res = await fetch(
@@ -52,7 +69,7 @@ export async function resolveReceivePubkey(params: {
   }
   if (!data.receivePubkeyHex) {
     throw new Error(
-      "Recipient has not registered a shielded key on-chain. Ask them to register in Notes, or use their zk1 address."
+      "Recipient has not registered a shielded key on-chain. Use their zk1 address instead."
     );
   }
   return hexToBytes32(data.receivePubkeyHex);

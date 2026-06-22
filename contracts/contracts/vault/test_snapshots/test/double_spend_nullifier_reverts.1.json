@@ -41,7 +41,7 @@
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 },
                 {
-                  "i128": "100000"
+                  "i128": "1000000000"
                 }
               ]
             }
@@ -57,16 +57,16 @@
           "function": {
             "contract_fn": {
               "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "function_name": "deposit",
+              "function_name": "join_pool",
               "args": [
                 {
                   "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
                 },
                 {
-                  "i128": "1000"
+                  "u32": 0
                 },
                 {
-                  "bytes": "0303030303030303030303030303030303030303030303030303030303030303"
+                  "bytes": "0100000000000000000000000000000000000000000000000000000000000000"
                 }
               ]
             }
@@ -85,7 +85,99 @@
                       "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
                     },
                     {
-                      "i128": "1000"
+                      "i128": "10000000"
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            }
+          ]
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "function_name": "join_pool",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                },
+                {
+                  "u32": 0
+                },
+                {
+                  "bytes": "0200000000000000000000000000000000000000000000000000000000000000"
+                }
+              ]
+            }
+          },
+          "sub_invocations": [
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CBEPDNVYXQGWB5YUBXKJWYJA7OXTZW5LFLNO5JRRGE6Z6C5OSUZPCCEL",
+                  "function_name": "transfer",
+                  "args": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    },
+                    {
+                      "i128": "10000000"
+                    }
+                  ]
+                }
+              },
+              "sub_invocations": []
+            }
+          ]
+        }
+      ]
+    ],
+    [
+      [
+        "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        {
+          "function": {
+            "contract_fn": {
+              "contract_address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "function_name": "join_pool",
+              "args": [
+                {
+                  "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                },
+                {
+                  "u32": 0
+                },
+                {
+                  "bytes": "0300000000000000000000000000000000000000000000000000000000000000"
+                }
+              ]
+            }
+          },
+          "sub_invocations": [
+            {
+              "function": {
+                "contract_fn": {
+                  "contract_address": "CBEPDNVYXQGWB5YUBXKJWYJA7OXTZW5LFLNO5JRRGE6Z6C5OSUZPCCEL",
+                  "function_name": "transfer",
+                  "args": [
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+                    },
+                    {
+                      "address": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4"
+                    },
+                    {
+                      "i128": "10000000"
                     }
                   ]
                 }
@@ -181,6 +273,46 @@
               "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
               "key": {
                 "ledger_key_nonce": {
+                  "nonce": "2032731177588607455"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
+                  "nonce": "4837995959683129791"
+                }
+              },
+              "durability": "temporary",
+              "val": "void"
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 6311999
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+              "key": {
+                "ledger_key_nonce": {
                   "nonce": "5541220902715666415"
                 }
               },
@@ -225,60 +357,6 @@
               "key": {
                 "vec": [
                   {
-                    "symbol": "LeafCommitment"
-                  },
-                  {
-                    "u32": 0
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "bytes": "0303030303030303030303030303030303030303030303030303030303030303"
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "key": {
-                "vec": [
-                  {
-                    "symbol": "LeafCommitment"
-                  },
-                  {
-                    "u32": 1
-                  }
-                ]
-              },
-              "durability": "persistent",
-              "val": {
-                "bytes": "0808080808080808080808080808080808080808080808080808080808080808"
-              }
-            }
-          },
-          "ext": "v0"
-        },
-        "live_until": 4095
-      },
-      {
-        "entry": {
-          "last_modified_ledger_seq": 0,
-          "data": {
-            "contract_data": {
-              "ext": "v0",
-              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
-              "key": {
-                "vec": [
-                  {
                     "symbol": "Nullifier"
                   },
                   {
@@ -289,6 +367,126 @@
               "durability": "persistent",
               "val": {
                 "bool": true
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "PoolLeafCommitment"
+                  },
+                  {
+                    "u32": 0
+                  },
+                  {
+                    "u32": 0
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "bytes": "0100000000000000000000000000000000000000000000000000000000000000"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "PoolLeafCommitment"
+                  },
+                  {
+                    "u32": 0
+                  },
+                  {
+                    "u32": 1
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "bytes": "0200000000000000000000000000000000000000000000000000000000000000"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "PoolLeafCommitment"
+                  },
+                  {
+                    "u32": 0
+                  },
+                  {
+                    "u32": 2
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "bytes": "0300000000000000000000000000000000000000000000000000000000000000"
+              }
+            }
+          },
+          "ext": "v0"
+        },
+        "live_until": 4095
+      },
+      {
+        "entry": {
+          "last_modified_ledger_seq": 0,
+          "data": {
+            "contract_data": {
+              "ext": "v0",
+              "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAITA4",
+              "key": {
+                "vec": [
+                  {
+                    "symbol": "PoolLeafCommitment"
+                  },
+                  {
+                    "u32": 0
+                  },
+                  {
+                    "u32": 3
+                  }
+                ]
+              },
+              "durability": "persistent",
+              "val": {
+                "bytes": "0808080808080808080808080808080808080808080808080808080808080808"
               }
             }
           },
@@ -327,7 +525,22 @@
                       "key": {
                         "vec": [
                           {
-                            "symbol": "MerkleTree"
+                            "symbol": "MinPoolSize"
+                          }
+                        ]
+                      },
+                      "val": {
+                        "u32": 3
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "PoolTree"
+                          },
+                          {
+                            "u32": 0
                           }
                         ]
                       },
@@ -340,52 +553,52 @@
                             "val": {
                               "vec": [
                                 {
-                                  "bytes": "0303030303030303030303030303030303030303030303030303030303030303"
+                                  "bytes": "0300000000000000000000000000000000000000000000000000000000000000"
                                 },
                                 {
-                                  "bytes": "12cde54e09effb5c5045933de2f0180396f5662444238a60fad045fb3908df85"
+                                  "bytes": "243924b63628a8b5a485e505964fc4666c18da0cb12f0f5fba942dea110dcfc6"
                                 },
                                 {
-                                  "bytes": "0af847fd25112a8b0cd3a793d323fa2a5a7d778627a320e2906cb03e19e70f45"
+                                  "bytes": "1512b91d4ced0596351d1811a4f55d8416c734075de4a8f9aee8171109bad79e"
                                 },
                                 {
-                                  "bytes": "23f8c285347b7ed4d33af0e5da81898529e0ee3d01bc83da1dee1af6e1cae72d"
+                                  "bytes": "0e243745ced356afba4b543eb8eb815953a874a5b0bf6c6c1548060ece2118e6"
                                 },
                                 {
-                                  "bytes": "00742492ee50e9849d15e6e53757c966da47bd1c526b2f3e870194b950c23c00"
+                                  "bytes": "277c9e25c8ca0e9a791cca8c815eb4cc55776fc209b85304346b74b634ee64b9"
                                 },
                                 {
-                                  "bytes": "223bba88f2185685a3e833e2db6a73c13a5e98abe31d1103eb213318b915fe42"
+                                  "bytes": "29cb031181daaa3993eca365cfc21d748f63ffb80df0d6465cf2ebf9b442b80a"
                                 },
                                 {
-                                  "bytes": "06bb99d4511a713caba94162c334f9e23b9ed8febd8da32fb05315ee5131aaba"
+                                  "bytes": "0df6c51859eb4da2332f7f2f5d1e9835161d3aaca62cdde9f295cac1461effe6"
                                 },
                                 {
-                                  "bytes": "040b39cc7c8822f973e9242241d8e11dcf5613f433817f7ed66b92c53a477df5"
+                                  "bytes": "0ab9e30c556a5f514aec5bd2ea2192348b5c130b20822bef3255f1cc887d31a0"
                                 },
                                 {
-                                  "bytes": "2ee7b37e5b69df7d33d5d6094101e52c82e9ef7c183014370082e8035f1455a1"
+                                  "bytes": "2bfbfecb4a461950df5a6352c0e538ad3e249e791bdd49cfa41c2b6311d07d9d"
                                 },
                                 {
-                                  "bytes": "01730ed2a0b8726c205d09f582e93f438df0c64d1f2102eb9c604923f0c8b3fa"
+                                  "bytes": "2beb9f3e345923c2e30662ff0801078f12438c7ad70f9c230cdc423e8dd47016"
                                 },
                                 {
-                                  "bytes": "0679ac67e661225664593e3ab6a3fc26c3a57713b5b29b4c5f7beac59209c4da"
+                                  "bytes": "18d4517ae3ec257557322198c4aa5468ada37a298b189a6594d1d044a6722497"
                                 },
                                 {
-                                  "bytes": "2ddaff720aa6eaf80f45dc7d524b860cca139ee6c8796f0ab4ed981613abeeb0"
+                                  "bytes": "1d2cedc99126319dc8bc2fb961e030d85128fc238cf2c44a012154c8ad1b9d7b"
                                 },
                                 {
-                                  "bytes": "28b33a71b60d98495754fb29d287aaa781230cc55a62e8355a262ccd49f23e5d"
+                                  "bytes": "0692bdc3d265f9d3b6bdbe427d7a4ee1b3bb03a6ca5e65ae2f10478a8fcdfaae"
                                 },
                                 {
-                                  "bytes": "0d713982ebfebbce2788cd9e9178561186cde1cd3682455b3e6e846d1f3bf7fe"
+                                  "bytes": "13a88345fbc8e020202dcf3aba4b787bfa5fcc61b60798e05d58171df06009e3"
                                 },
                                 {
-                                  "bytes": "15d6ccd986249a5a465c645955947ae209f2ca6274b2a16e32f596540bfe28cd"
+                                  "bytes": "1a234f18bb6062181cb9280edab5c27eaaa4ad78b60a03b3a671ec9c256d5097"
                                 },
                                 {
-                                  "bytes": "20cd271cbe41f4cb9f99c76ddccc60336f2bf5e5871c25b0f0d27201ec5c78a4"
+                                  "bytes": "127de18bbad6f7edd75cdb6d3eec20e897764b58f20d22c397b41de2560e279d"
                                 }
                               ]
                             }
@@ -395,7 +608,283 @@
                               "symbol": "leaf_count"
                             },
                             "val": {
-                              "u32": 2
+                              "u32": 4
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "zeros"
+                            },
+                            "val": {
+                              "vec": [
+                                {
+                                  "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                                },
+                                {
+                                  "bytes": "0b63a53787021a4a962a452c2921b3663aff1ffd8d5510540f8e659e782956f1"
+                                },
+                                {
+                                  "bytes": "0e34ac2c09f45a503d2908bcb12f1cbae5fa4065759c88d501c097506a8b2290"
+                                },
+                                {
+                                  "bytes": "21f9172d72fdcdafc312eee05cf5092980dda821da5b760a9fb8dbdf607c8a20"
+                                },
+                                {
+                                  "bytes": "2373ea368857ec7af97e7b470d705848e2bf93ed7bef142a490f2119bcf82d8e"
+                                },
+                                {
+                                  "bytes": "120157cfaaa49ce3da30f8b47879114977c24b266d58b0ac18b325d878aafddf"
+                                },
+                                {
+                                  "bytes": "01c28fe1059ae0237b72334700697bdf465e03df03986fe05200cadeda66bd76"
+                                },
+                                {
+                                  "bytes": "2d78ed82f93b61ba718b17c2dfe5b52375b4d37cbbed6f1fc98b47614b0cf21b"
+                                },
+                                {
+                                  "bytes": "067243231eddf4222f3911defbba7705aff06ed45960b27f6f91319196ef97e1"
+                                },
+                                {
+                                  "bytes": "1849b85f3c693693e732dfc4577217acc18295193bede09ce8b97ad910310972"
+                                },
+                                {
+                                  "bytes": "2a775ea761d20435b31fa2c33ff07663e24542ffb9e7b293dfce3042eb104686"
+                                },
+                                {
+                                  "bytes": "0f320b0703439a8114f81593de99cd0b8f3b9bf854601abb5b2ea0e8a3dda4a7"
+                                },
+                                {
+                                  "bytes": "0d07f6e7a8a0e9199d6d92801fff867002ff5b4808962f9da2ba5ce1bdd26a73"
+                                },
+                                {
+                                  "bytes": "1c4954081e324939350febc2b918a293ebcdaead01be95ec02fcbe8d2c1635d1"
+                                },
+                                {
+                                  "bytes": "0197f2171ef99c2d053ee1fb5ff5ab288d56b9b41b4716c9214a4d97facc4c4a"
+                                },
+                                {
+                                  "bytes": "2b9cdd484c5ba1e4d6efcc3f18734b5ac4c4a0b9102e2aeb48521a661d3feee9"
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "PoolTree"
+                          },
+                          {
+                            "u32": 1
+                          }
+                        ]
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "filled"
+                            },
+                            "val": {
+                              "vec": [
+                                {
+                                  "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                                },
+                                {
+                                  "bytes": "0b63a53787021a4a962a452c2921b3663aff1ffd8d5510540f8e659e782956f1"
+                                },
+                                {
+                                  "bytes": "0e34ac2c09f45a503d2908bcb12f1cbae5fa4065759c88d501c097506a8b2290"
+                                },
+                                {
+                                  "bytes": "21f9172d72fdcdafc312eee05cf5092980dda821da5b760a9fb8dbdf607c8a20"
+                                },
+                                {
+                                  "bytes": "2373ea368857ec7af97e7b470d705848e2bf93ed7bef142a490f2119bcf82d8e"
+                                },
+                                {
+                                  "bytes": "120157cfaaa49ce3da30f8b47879114977c24b266d58b0ac18b325d878aafddf"
+                                },
+                                {
+                                  "bytes": "01c28fe1059ae0237b72334700697bdf465e03df03986fe05200cadeda66bd76"
+                                },
+                                {
+                                  "bytes": "2d78ed82f93b61ba718b17c2dfe5b52375b4d37cbbed6f1fc98b47614b0cf21b"
+                                },
+                                {
+                                  "bytes": "067243231eddf4222f3911defbba7705aff06ed45960b27f6f91319196ef97e1"
+                                },
+                                {
+                                  "bytes": "1849b85f3c693693e732dfc4577217acc18295193bede09ce8b97ad910310972"
+                                },
+                                {
+                                  "bytes": "2a775ea761d20435b31fa2c33ff07663e24542ffb9e7b293dfce3042eb104686"
+                                },
+                                {
+                                  "bytes": "0f320b0703439a8114f81593de99cd0b8f3b9bf854601abb5b2ea0e8a3dda4a7"
+                                },
+                                {
+                                  "bytes": "0d07f6e7a8a0e9199d6d92801fff867002ff5b4808962f9da2ba5ce1bdd26a73"
+                                },
+                                {
+                                  "bytes": "1c4954081e324939350febc2b918a293ebcdaead01be95ec02fcbe8d2c1635d1"
+                                },
+                                {
+                                  "bytes": "0197f2171ef99c2d053ee1fb5ff5ab288d56b9b41b4716c9214a4d97facc4c4a"
+                                },
+                                {
+                                  "bytes": "2b9cdd484c5ba1e4d6efcc3f18734b5ac4c4a0b9102e2aeb48521a661d3feee9"
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "leaf_count"
+                            },
+                            "val": {
+                              "u32": 0
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "zeros"
+                            },
+                            "val": {
+                              "vec": [
+                                {
+                                  "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                                },
+                                {
+                                  "bytes": "0b63a53787021a4a962a452c2921b3663aff1ffd8d5510540f8e659e782956f1"
+                                },
+                                {
+                                  "bytes": "0e34ac2c09f45a503d2908bcb12f1cbae5fa4065759c88d501c097506a8b2290"
+                                },
+                                {
+                                  "bytes": "21f9172d72fdcdafc312eee05cf5092980dda821da5b760a9fb8dbdf607c8a20"
+                                },
+                                {
+                                  "bytes": "2373ea368857ec7af97e7b470d705848e2bf93ed7bef142a490f2119bcf82d8e"
+                                },
+                                {
+                                  "bytes": "120157cfaaa49ce3da30f8b47879114977c24b266d58b0ac18b325d878aafddf"
+                                },
+                                {
+                                  "bytes": "01c28fe1059ae0237b72334700697bdf465e03df03986fe05200cadeda66bd76"
+                                },
+                                {
+                                  "bytes": "2d78ed82f93b61ba718b17c2dfe5b52375b4d37cbbed6f1fc98b47614b0cf21b"
+                                },
+                                {
+                                  "bytes": "067243231eddf4222f3911defbba7705aff06ed45960b27f6f91319196ef97e1"
+                                },
+                                {
+                                  "bytes": "1849b85f3c693693e732dfc4577217acc18295193bede09ce8b97ad910310972"
+                                },
+                                {
+                                  "bytes": "2a775ea761d20435b31fa2c33ff07663e24542ffb9e7b293dfce3042eb104686"
+                                },
+                                {
+                                  "bytes": "0f320b0703439a8114f81593de99cd0b8f3b9bf854601abb5b2ea0e8a3dda4a7"
+                                },
+                                {
+                                  "bytes": "0d07f6e7a8a0e9199d6d92801fff867002ff5b4808962f9da2ba5ce1bdd26a73"
+                                },
+                                {
+                                  "bytes": "1c4954081e324939350febc2b918a293ebcdaead01be95ec02fcbe8d2c1635d1"
+                                },
+                                {
+                                  "bytes": "0197f2171ef99c2d053ee1fb5ff5ab288d56b9b41b4716c9214a4d97facc4c4a"
+                                },
+                                {
+                                  "bytes": "2b9cdd484c5ba1e4d6efcc3f18734b5ac4c4a0b9102e2aeb48521a661d3feee9"
+                                }
+                              ]
+                            }
+                          }
+                        ]
+                      }
+                    },
+                    {
+                      "key": {
+                        "vec": [
+                          {
+                            "symbol": "PoolTree"
+                          },
+                          {
+                            "u32": 2
+                          }
+                        ]
+                      },
+                      "val": {
+                        "map": [
+                          {
+                            "key": {
+                              "symbol": "filled"
+                            },
+                            "val": {
+                              "vec": [
+                                {
+                                  "bytes": "0000000000000000000000000000000000000000000000000000000000000000"
+                                },
+                                {
+                                  "bytes": "0b63a53787021a4a962a452c2921b3663aff1ffd8d5510540f8e659e782956f1"
+                                },
+                                {
+                                  "bytes": "0e34ac2c09f45a503d2908bcb12f1cbae5fa4065759c88d501c097506a8b2290"
+                                },
+                                {
+                                  "bytes": "21f9172d72fdcdafc312eee05cf5092980dda821da5b760a9fb8dbdf607c8a20"
+                                },
+                                {
+                                  "bytes": "2373ea368857ec7af97e7b470d705848e2bf93ed7bef142a490f2119bcf82d8e"
+                                },
+                                {
+                                  "bytes": "120157cfaaa49ce3da30f8b47879114977c24b266d58b0ac18b325d878aafddf"
+                                },
+                                {
+                                  "bytes": "01c28fe1059ae0237b72334700697bdf465e03df03986fe05200cadeda66bd76"
+                                },
+                                {
+                                  "bytes": "2d78ed82f93b61ba718b17c2dfe5b52375b4d37cbbed6f1fc98b47614b0cf21b"
+                                },
+                                {
+                                  "bytes": "067243231eddf4222f3911defbba7705aff06ed45960b27f6f91319196ef97e1"
+                                },
+                                {
+                                  "bytes": "1849b85f3c693693e732dfc4577217acc18295193bede09ce8b97ad910310972"
+                                },
+                                {
+                                  "bytes": "2a775ea761d20435b31fa2c33ff07663e24542ffb9e7b293dfce3042eb104686"
+                                },
+                                {
+                                  "bytes": "0f320b0703439a8114f81593de99cd0b8f3b9bf854601abb5b2ea0e8a3dda4a7"
+                                },
+                                {
+                                  "bytes": "0d07f6e7a8a0e9199d6d92801fff867002ff5b4808962f9da2ba5ce1bdd26a73"
+                                },
+                                {
+                                  "bytes": "1c4954081e324939350febc2b918a293ebcdaead01be95ec02fcbe8d2c1635d1"
+                                },
+                                {
+                                  "bytes": "0197f2171ef99c2d053ee1fb5ff5ab288d56b9b41b4716c9214a4d97facc4c4a"
+                                },
+                                {
+                                  "bytes": "2b9cdd484c5ba1e4d6efcc3f18734b5ac4c4a0b9102e2aeb48521a661d3feee9"
+                                }
+                              ]
+                            }
+                          },
+                          {
+                            "key": {
+                              "symbol": "leaf_count"
+                            },
+                            "val": {
+                              "u32": 0
                             }
                           },
                           {
@@ -516,7 +1005,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "99000"
+                      "i128": "970000000"
                     }
                   },
                   {
@@ -568,7 +1057,7 @@
                       "symbol": "amount"
                     },
                     "val": {
-                      "i128": "1000"
+                      "i128": "30000000"
                     }
                   },
                   {

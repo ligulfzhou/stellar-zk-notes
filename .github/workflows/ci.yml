@@ -19,6 +19,8 @@ jobs:
         run: cd circuits/transfer_actions && nargo test
       - name: nargo test (note_hash)
         run: cd circuits/note_hash && nargo test
+      - name: nargo test (pool_actions)
+        run: cd circuits/pool_actions && nargo test
 
   bb-prove:
     runs-on: ubuntu-latest

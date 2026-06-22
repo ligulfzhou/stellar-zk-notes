@@ -4,7 +4,12 @@ import type { CompiledCircuit } from "@noir-lang/types";
 const BN254_MOD =
   21888242871839275222246405745257275088548364400416034343698204186575808495617n;
 
-export type NoirCircuitName = "note_hash" | "hash_pair" | "transfer_actions";
+export type NoirCircuitName =
+  | "note_hash"
+  | "hash_pair"
+  | "transfer_actions"
+  | "pool_actions"
+  | "exit_hash";
 
 let wasmInit: Promise<void> | null = null;
 const circuitCache = new Map<string, CompiledCircuit>();
@@ -69,10 +74,12 @@ async function loadCircuit(name: NoirCircuitName): Promise<CompiledCircuit> {
 }
 
 export async function loadSpendCircuit(): Promise<CompiledCircuit> {
-  return loadCircuit("transfer_actions");
+  return loadCircuit("pool_actions");
 }
 
-async function getNoir(name: Exclude<NoirCircuitName, "transfer_actions">): Promise<Noir> {
+async function getNoir(
+  name: Exclude<NoirCircuitName, "transfer_actions" | "pool_actions">
+): Promise<Noir> {
   const cached = noirCache.get(name);
   if (cached) return cached;
   await ensureBrowserWasm();
@@ -83,8 +90,8 @@ async function getNoir(name: Exclude<NoirCircuitName, "transfer_actions">): Prom
 
 /** Execute a Noir circuit and return the public field result as 0x-prefixed hex. */
 export async function executeNoirField(
-  circuit: Exclude<NoirCircuitName, "transfer_actions">,
-  inputs: Record<string, string>
+  circuit: Exclude<NoirCircuitName, "transfer_actions" | "pool_actions">,
+  inputs: Record<string, string | string[]>
 ): Promise<string> {
   const noir = await getNoir(circuit);
   const { returnValue } = await noir.execute(inputs);

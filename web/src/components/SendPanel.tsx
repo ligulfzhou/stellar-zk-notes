@@ -8,23 +8,29 @@ import { resolveNoteSecretsFromVault } from "@/lib/note-secrets";
 import { proveWitness } from "@/lib/prove-client";
 import type { ProvePhase } from "@/lib/prover-client";
 import { ProveProgress } from "@/components/ProveProgress";
-import { buildTransferWitness, MAX_ACTION_SLOTS } from "@/lib/action-witness";
+import {
+  buildTransferWitness,
+  depositSecretBytesForNote,
+  MAX_ACTION_SLOTS,
+  randomDepositSecret,
+} from "@/lib/action-witness";
+import { deriveDepositSecretFromSeed } from "@/lib/root-seed";
 import { proofBytesFromHex } from "@/lib/proof";
+import { isX25519PubkeyHex, resolveReceivePubkey } from "@/lib/shielded-registry";
 import { isZk1Address } from "@/lib/shielded-keys";
-import { resolveReceivePubkey } from "@/lib/shielded-registry";
 import { encodePublicInputs, shieldedTransferToVault } from "@/lib/stellar";
 import { formatError } from "@/lib/format-error";
-import { upsertChainCommitment } from "@/lib/vault-events";
+import { upsertPoolChainCommitment } from "@/lib/vault-events";
 import { persistVaultState, useWalletStore } from "@/store/useWalletStore";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
 import { TxLink } from "@/components/TxLink";
 
 export function SendPanel() {
-  const { publicKey, notes, chainCommitments, refreshNotes } = useWalletStore();
+  const { publicKey, notes, poolChainCommitments, refreshNotes } = useWalletStore();
   const { unlocked, unlock } = usePasskeyStore();
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [sendAmountXlm, setSendAmountXlm] = useState("");
-  const [recipientOverride, setRecipientOverride] = useState<string | null>(null);
+  const [recipient, setRecipient] = useState("");
   const [loading, setLoading] = useState(false);
   const [provePhase, setProvePhase] = useState<ProvePhase | null>(null);
   const [proveDetail, setProveDetail] = useState<string | null>(null);
@@ -43,10 +49,7 @@ export function SendPanel() {
   }
 
   const unspent = notes.filter((n) => n.status === "unspent");
-  const recipientTrimmed = (recipientOverride ?? publicKey ?? "").trim();
-  const sendToSelf = Boolean(
-    publicKey && recipientTrimmed && publicKey === recipientTrimmed
-  );
+  const recipientTrimmed = recipient.trim();
 
   function toggleNote(id: string) {
     setSelectedIds((prev) => {
@@ -69,8 +72,12 @@ export function SendPanel() {
       return;
     }
 
-    if (!recipientTrimmed.startsWith("G") && !isZk1Address(recipientTrimmed)) {
-      setError("Enter zk1… shielded address or registered Stellar G…");
+    if (!recipientTrimmed) {
+      setError("Enter recipient zk1 shielded address or X25519 pubkey (64 hex)");
+      return;
+    }
+    if (!isZk1Address(recipientTrimmed) && !isX25519PubkeyHex(recipientTrimmed)) {
+      setError("Recipient must be zk1:testnet:… or a 64-char X25519 pubkey — copy from recipient Notes tab");
       return;
     }
 
@@ -83,17 +90,20 @@ export function SendPanel() {
         setStatus("Unlocking passkey…");
         await unlock();
       }
-      const seed = usePasskeyStore.getState().rootSeed;
+      const seed = usePasskeyStore.getState().requireSeed();
+      const poolId = selected[0]!.poolId;
 
       const chainRes = await fetch("/api/chain-commitments", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           reader: publicKey,
-          localCommitments: chainCommitments,
+          poolId,
+          localPoolCommitments: poolChainCommitments,
           notes: unspent.map((n) => ({
             leafIndex: n.leafIndex,
             commitment: n.commitment,
+            poolId: n.poolId,
           })),
         }),
       });
@@ -131,6 +141,7 @@ export function SendPanel() {
         readerPublicKey: publicKey,
         selfPublicKey: publicKey,
         selfRootSeed: seed,
+        allowOnChainRegistry: false,
       });
 
       setStatus("Building action witness…");
@@ -141,28 +152,28 @@ export function SendPanel() {
             value: note!.value.toString(),
             secret: secrets.secret,
             nullifierSecret: secrets.nullifierSecret,
+            depositSecret: depositSecretBytesForNote(note!),
             leafIndex: note!.leafIndex,
             commitment: note!.commitment,
           };
         })
       );
 
-      let payeeSecret: string;
-      let payeeNullifierSecret: string;
-      if (sendToSelf) {
-        const derived = await deriveAndAllocateNoteSecrets(publicKey);
-        payeeSecret = derived.secret;
-        payeeNullifierSecret = derived.nullifierSecret;
-      } else {
-        payeeSecret = randomField();
-        payeeNullifierSecret = randomField();
-      }
+      const payeeSecret = randomField();
+      const payeeNullifierSecret = randomField();
+      const payeeDepositSecret = randomDepositSecret();
 
-      const outputs: Array<{ value: string; secret: string; nullifierSecret: string }> = [
+      const outputs: Array<{
+        value: string;
+        secret: string;
+        nullifierSecret: string;
+        depositSecret: Uint8Array;
+      }> = [
         {
           value: payeeAmount.toString(),
           secret: payeeSecret,
           nullifierSecret: payeeNullifierSecret,
+          depositSecret: payeeDepositSecret,
         },
       ];
 
@@ -173,10 +184,12 @@ export function SendPanel() {
           value: changeAmount.toString(),
           secret: changeDerived.secret,
           nullifierSecret: changeDerived.nullifierSecret,
+          depositSecret: deriveDepositSecretFromSeed(seed, changeDerived.derivationIndex),
         });
       }
 
       const built = await buildTransferWitness({
+        poolId,
         inputs: inputNotes,
         outputs,
         leafCount: chainData.leafCount ?? chain.length,
@@ -216,6 +229,7 @@ export function SendPanel() {
           readerPublicKey: publicKey,
           selfPublicKey: publicKey,
           selfRootSeed: seed,
+          allowOnChainRegistry: false,
         });
         const encChange = encryptNoteForRecipient(selfReceive, {
           value: changeAmount.toString(),
@@ -230,14 +244,16 @@ export function SendPanel() {
 
       setStatus("Submitting shielded transfer…");
       const publicInputs = encodePublicInputs({
+        poolId,
         merkleRootHex: prove.merkleRoot ?? built.merkleRootHex,
-        nullifierHexes: prove.nullifierHexes,
+        nullifierHexes: built.nullifierHexes,
         newCommitmentHexes: built.newCommitmentHexes,
         publicAmount: "0",
       });
 
       const txHash = await shieldedTransferToVault({
         sourcePublicKey: publicKey,
+        poolId,
         nullifierHexes: built.nullifierHexes,
         newCommitmentHexes: built.newCommitmentHexes,
         merkleRootHex: prove.merkleRoot ?? built.merkleRootHex,
@@ -252,32 +268,23 @@ export function SendPanel() {
       let updatedNotes = notes.map((n) =>
         spentIds.has(n.id) ? { ...n, status: "spent" as const } : n
       );
-      let updatedChain = chain;
+      let updatedPools = poolChainCommitments;
       built.newCommitmentHexes.forEach((nc, i) => {
         if (nc !== "0x0") {
-          updatedChain = upsertChainCommitment(updatedChain, leafBase + i, nc);
+          updatedPools = upsertPoolChainCommitment(
+            updatedPools,
+            poolId,
+            leafBase + i,
+            nc
+          );
         }
       });
-
-      if (sendToSelf && payeeAmount > 0n) {
-        const derived = await deriveAndAllocateNoteSecrets(publicKey);
-        updatedNotes.push(
-          await createNote({
-            valueStroops: payeeAmount,
-            ownerPubkey: publicKey,
-            secret: payeeSecret,
-            nullifierSecret: payeeNullifierSecret,
-            commitmentHex: built.newCommitmentHexes[0]!,
-            leafIndex: leafBase,
-            derivationIndex: derived.derivationIndex,
-          })
-        );
-      }
 
       if (changeAmount > 0n && changeDerived) {
         updatedNotes.push(
           await createNote({
             valueStroops: changeAmount,
+            poolId,
             ownerPubkey: publicKey,
             secret: changeDerived.secret,
             nullifierSecret: changeDerived.nullifierSecret,
@@ -288,7 +295,7 @@ export function SendPanel() {
         );
       }
 
-      await persistVaultState(updatedNotes, updatedChain);
+      await persistVaultState(updatedNotes, updatedPools);
       await refreshNotes();
 
       setStatus(
@@ -317,7 +324,9 @@ export function SendPanel() {
     <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
       <h2 className="mb-4 text-lg font-medium">Shielded send</h2>
       <p className="mb-3 text-xs text-zinc-400">
-        Action model: select up to {MAX_ACTION_SLOTS} notes, one ZK proof (payee + optional change).
+        Pay someone inside the pool: select up to {MAX_ACTION_SLOTS} notes, one ZK proof.
+        Recipient shares their <span className="text-zinc-300">zk1</span> address from the Notes
+        tab (no on-chain registration). Partial sends return change to you automatically.
       </p>
       <label className="mb-2 block text-sm text-zinc-300">Notes to spend</label>
       <ul className="mb-4 max-h-48 space-y-2 overflow-y-auto">
@@ -345,13 +354,18 @@ export function SendPanel() {
         placeholder="e.g. 0.15"
         className="mb-4 w-full max-w-md rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm"
       />
-      <label className="mb-2 block text-sm text-zinc-300">Recipient (zk1… or G…)</label>
+      <label className="mb-2 block text-sm text-zinc-300">
+        Recipient zk1 address
+      </label>
       <input
-        value={recipientOverride ?? publicKey ?? ""}
-        onChange={(e) => setRecipientOverride(e.target.value)}
-        placeholder="zk1:testnet:… or G…"
-        className="mb-4 w-full max-w-md rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm font-mono"
+        value={recipient}
+        onChange={(e) => setRecipient(e.target.value)}
+        placeholder="zk1:testnet:…"
+        className="mb-1 w-full max-w-md rounded-lg border border-white/10 bg-black/30 px-3 py-2 text-sm font-mono"
       />
+      <p className="mb-4 text-xs text-zinc-500">
+        Or paste recipient X25519 pubkey (64 hex). Recipient scans encrypted incoming on Dashboard.
+      </p>
       <button
         type="button"
         onClick={() => void handleSend()}

@@ -43,9 +43,17 @@ Stellar/Soroban RPC  →  Vault contract  →  UltraHonk verifier
 
 **Impact:** Observer sees `epk`, ciphertext size, timing, and public commitments. Does not break ZK soundness but may aid traffic analysis.
 
-**Mitigations:** Ciphertext hides note contents; amounts are not in plaintext on-chain for shielded sends.
+**Mitigations:** Ciphertext hides note contents; fixed 512-byte padding on `encrypted_note`; per-output nullifiers in `ShieldedSendEvent`.
 
-**Residual risk:** No padding policy; identical note sizes may correlate sends.
+**Residual risk:** Timing and volume patterns may still correlate activity.
+
+### 3b. Relayer adversary (Phase C)
+
+**Impact:** Relayer decrypts `encrypted_exit` and learns recipient + amount for payouts. Relayer can censor submissions or exit payouts.
+
+**Mitigations:** Exit ciphertext is public but encrypted; users can run their own relayer; `strict` mode hides wallet as tx submitter.
+
+**Residual risk:** Single relayer is trusted for liveness and payout honesty until multi-relayer / ASP (Phase D).
 
 ### 4. Front-running / mempool visibility
 
@@ -79,9 +87,9 @@ Stellar/Soroban RPC  →  Vault contract  →  UltraHonk verifier
 
 ## Out of scope (explicit)
 
-- **ASP / compliance** — no membership proofs; see [design spec](superpowers/specs/2026-06-13-utxo-private-payment-design.md) § MVP Limitations.
-- **Multi-token, change outputs, note splitting** — Phase 5.
-- **On-chain privacy against global adversaries** — MVP targets deposit↔withdraw unlinkability under UTXO model.
+- **ASP / compliance membership proofs** — anonymity set sizing only in Phase C; full ASP is Phase D (see [Phase C spec](superpowers/specs/2026-06-22-phase-c-privacy-design.md)).
+- **Multi-token** — native XLM SAC only in MVP.
+- **On-chain privacy against global adversaries** — Phase C targets join↔exit unlinkability within denomination pools; relayer sees exit payouts.
 
 ## Pre-mainnet checklist
 

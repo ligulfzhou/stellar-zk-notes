@@ -3,18 +3,25 @@ import type { VaultChainEvent } from "./vault-events";
 
 export type SerializedVaultChainEvent =
   | {
-      kind: "deposit";
+      kind: "join";
+      poolId: number;
       ledger: number;
       txHash: string;
-      depositor: string;
       commitment: string;
       leafIndex: number;
-      amount: string;
+    }
+  | {
+      kind: "exit";
+      poolId: number;
+      ledger: number;
+      txHash: string;
+      nullifier: string;
     }
   | {
       kind: "shielded_send";
       ledger: number;
       txHash: string;
+      poolId: number;
       nullifier: string;
       newCommitment: string;
       leafIndex: number;
@@ -26,21 +33,30 @@ export function serializeVaultEvents(
   events: VaultChainEvent[]
 ): SerializedVaultChainEvent[] {
   return events.map((event) => {
-    if (event.kind === "deposit") {
+    if (event.kind === "join") {
       return {
-        kind: "deposit",
+        kind: "join",
+        poolId: event.poolId,
         ledger: event.ledger,
         txHash: event.txHash,
-        depositor: event.depositor,
         commitment: event.commitment,
         leafIndex: event.leafIndex,
-        amount: event.amount.toString(),
+      };
+    }
+    if (event.kind === "exit") {
+      return {
+        kind: "exit",
+        poolId: event.poolId,
+        ledger: event.ledger,
+        txHash: event.txHash,
+        nullifier: event.nullifier,
       };
     }
     return {
       kind: "shielded_send",
       ledger: event.ledger,
       txHash: event.txHash,
+      poolId: event.poolId,
       nullifier: event.nullifier,
       newCommitment: event.newCommitment,
       leafIndex: event.leafIndex,
@@ -63,21 +79,30 @@ export function deserializeVaultEvents(
   events: SerializedVaultChainEvent[]
 ): VaultChainEvent[] {
   return events.map((event) => {
-    if (event.kind === "deposit") {
+    if (event.kind === "join") {
       return {
-        kind: "deposit",
+        kind: "join",
+        poolId: event.poolId,
         ledger: event.ledger,
         txHash: event.txHash,
-        depositor: event.depositor,
         commitment: event.commitment,
         leafIndex: event.leafIndex,
-        amount: BigInt(event.amount),
+      };
+    }
+    if (event.kind === "exit") {
+      return {
+        kind: "exit",
+        poolId: event.poolId,
+        ledger: event.ledger,
+        txHash: event.txHash,
+        nullifier: event.nullifier,
       };
     }
     return {
       kind: "shielded_send",
       ledger: event.ledger,
       txHash: event.txHash,
+      poolId: event.poolId,
       nullifier: event.nullifier,
       newCommitment: event.newCommitment,
       leafIndex: event.leafIndex,

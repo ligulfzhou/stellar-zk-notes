@@ -2,9 +2,11 @@ import { bytesToHex0x, normalizeHex } from "./bytes";
 import { tryDecryptNote } from "./ecdh-delivery";
 import { createNote } from "./note";
 import type { Note, StoredNoteVault } from "./note-types";
+import { poolById } from "./pool-config";
 import { deriveShieldedReceiveKeysFromRoot } from "./shielded-keys";
 import { fetchVaultChainState } from "./vault-events-client";
 import type { VaultChainEvent, VaultShieldedSendEvent } from "./vault-events";
+import { upsertPoolChainCommitment } from "./vault-events";
 
 function hexToBytes(hex: string): Uint8Array {
   const h = normalizeHex(hex).slice(2);
@@ -19,15 +21,16 @@ export async function scanIncomingEncryptedNotes(params: {
   ownerPubkey: string;
   vault: StoredNoteVault;
   rootSeed: Uint8Array;
-}): Promise<{ notes: Note[]; chainCommitments: string[]; imported: number }> {
+}): Promise<{ notes: Note[]; poolChainCommitments: string[][]; imported: number }> {
   const { secretKey } = deriveShieldedReceiveKeysFromRoot(params.rootSeed);
 
   const chainState = await fetchVaultChainState({
     reader: params.ownerPubkey,
-    localCommitments: params.vault.chainCommitments,
+    localPoolCommitments: params.vault.poolChainCommitments,
+    notes: params.vault.notes,
   });
   const events = chainState.events;
-  const chainCommitments = [...chainState.commitments];
+  let poolChainCommitments = chainState.poolCommitments.map((p) => [...p]);
   const notes = [...params.vault.notes];
   let imported = 0;
 
@@ -48,6 +51,7 @@ export async function scanIncomingEncryptedNotes(params: {
 
     const note = await createNote({
       valueStroops: BigInt(payload.value),
+      poolId: event.poolId,
       ownerPubkey: params.ownerPubkey,
       secret: payload.secret,
       nullifierSecret: payload.nullifierSecret,
@@ -55,24 +59,30 @@ export async function scanIncomingEncryptedNotes(params: {
       leafIndex: event.leafIndex,
     });
 
-    while (chainCommitments.length <= event.leafIndex) {
-      chainCommitments.push("");
-    }
-    chainCommitments[event.leafIndex] = event.newCommitment;
+    poolChainCommitments = upsertPoolChainCommitment(
+      poolChainCommitments,
+      event.poolId,
+      event.leafIndex,
+      event.newCommitment
+    );
     notes.push(note);
     imported += 1;
   }
 
   return {
     notes,
-    chainCommitments: chainCommitments,
+    poolChainCommitments,
     imported,
   };
 }
 
 export function eventToActivityLabel(event: VaultChainEvent): string {
-  if (event.kind === "deposit") {
-    return `Deposit ${Number(event.amount) / 1e7} XLM (leaf ${event.leafIndex})`;
+  if (event.kind === "join") {
+    const label = poolById(event.poolId).label;
+    return `Join ${label} pool (leaf ${event.leafIndex})`;
+  }
+  if (event.kind === "exit") {
+    return `Exit pool ${event.poolId} (nullifier spent)`;
   }
   const enc =
     event.encryptedNote.length > 0

@@ -13,11 +13,15 @@ mkdir -p "$CIRCUITS" "$WASM"
 
 cd "$ROOT/circuits/note_hash" && nargo compile
 cd "$ROOT/circuits/hash_pair" && nargo compile
-cd "$ROOT/circuits/transfer_actions" && nargo compile
+cd "$ROOT/circuits/pool_actions" && nargo compile
+cd "$ROOT/circuits/exit_hash" && nargo compile
 
 cp "$ROOT/circuits/note_hash/target/note_hash.json" "$CIRCUITS/note_hash.json"
 cp "$ROOT/circuits/hash_pair/target/hash_pair.json" "$CIRCUITS/hash_pair.json"
-cp "$ROOT/circuits/transfer_actions/target/transfer_actions.json" "$CIRCUITS/transfer_actions.json"
+cp "$ROOT/circuits/pool_actions/target/pool_actions.json" "$CIRCUITS/pool_actions.json"
+cp "$ROOT/circuits/exit_hash/target/exit_hash.json" "$CIRCUITS/exit_hash.json"
+# Legacy alias for older clients
+cp "$CIRCUITS/pool_actions.json" "$CIRCUITS/transfer_actions.json"
 
 if [[ -d "$WEB/node_modules/@noir-lang/acvm_js/web" ]]; then
   cp "$WEB/node_modules/@noir-lang/acvm_js/web/acvm_js_bg.wasm" "$WASM/"

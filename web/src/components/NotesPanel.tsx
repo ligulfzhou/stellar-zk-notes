@@ -24,7 +24,7 @@ function formatStroops(value: bigint): string {
 }
 
 export function NotesPanel() {
-  const { notes, chainCommitments, publicKey, refreshNotes } = useWalletStore();
+  const { notes, poolChainCommitments, publicKey, refreshNotes } = useWalletStore();
   const {
     unlocked,
     unlocking,
@@ -38,6 +38,7 @@ export function NotesPanel() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false);
   const [registering, setRegistering] = useState(false);
   const [zk1Address, setZk1Address] = useState<string | null>(null);
   const [passkeyReady, setPasskeyReady] = useState(false);
@@ -134,7 +135,7 @@ export function NotesPanel() {
       try {
         seed = await unlock();
       } catch {
-        setError("Unlock passkey first to rescan deposits");
+        setError("Unlock passkey first to rescan joins");
         return;
       }
     }
@@ -152,11 +153,11 @@ export function NotesPanel() {
       await persistFullVault(result.vault);
       await refreshNotes();
       setStatus(
-        `Rescan done: ${result.depositsMatched} deposit(s) recovered, ` +
-          `${result.vault.chainCommitments.length} commitments, ` +
+        `Rescan done: ${result.joinsMatched} join(s) recovered, ` +
+          `pool-0 ${result.vault.poolChainCommitments[0]?.length ?? 0} commitments, ` +
           `${result.eventsParsed} events` +
-          (result.depositsSkipped
-            ? ` (${result.depositsSkipped} deposit(s) unmatched)`
+          (result.joinsSkipped
+            ? ` (${result.joinsSkipped} join(s) unmatched)`
             : "")
       );
     } catch (err) {
@@ -211,7 +212,7 @@ export function NotesPanel() {
         <p className="mt-2 text-sm text-zinc-300">
           Status:{" "}
           {!passkeyReady
-            ? "not set — create before first deposit"
+            ? "not set — create before first join"
             : unlocked
               ? "🔓 unlocked"
               : "🔒 locked"}
@@ -233,17 +234,32 @@ export function NotesPanel() {
             >
               Copy zk1
             </button>
+            <p className="mt-2 text-xs text-zinc-400">
+              Share zk1 with senders — no on-chain registration needed.
+            </p>
             <button
               type="button"
-              onClick={() => void handleRegisterShieldedKey()}
-              disabled={registering || !passkeyReady}
-              className="mt-2 ml-2 rounded-lg border border-emerald-500/30 px-3 py-1 text-xs text-emerald-200 hover:bg-emerald-500/10 disabled:opacity-50"
+              onClick={() => setShowAdvanced((v) => !v)}
+              className="mt-2 text-xs text-zinc-500 underline decoration-zinc-600 underline-offset-2 hover:text-zinc-300"
             >
-              {registering ? "Registering…" : "Register on-chain"}
+              {showAdvanced ? "Hide advanced" : "Advanced: on-chain register"}
             </button>
-            <p className="mt-2 text-xs text-zinc-500">
-              Register once so others can send to your G… address with on-chain encryption.
-            </p>
+            {showAdvanced ? (
+              <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
+                <p className="text-xs text-amber-200">
+                  Warning: registering your shielded key on-chain links your G…
+                  address to encryption metadata. Prefer sharing zk1 off-chain.
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void handleRegisterShieldedKey()}
+                  disabled={registering || !passkeyReady}
+                  className="mt-2 rounded-lg border border-amber-500/40 px-3 py-1 text-xs text-amber-100 hover:bg-amber-500/10 disabled:opacity-50"
+                >
+                  {registering ? "Registering…" : "Register on-chain (legacy)"}
+                </button>
+              </div>
+            ) : null}
           </div>
         ) : null}
 
@@ -322,7 +338,7 @@ export function NotesPanel() {
 
       <p className="mb-4 text-xs text-zinc-500">
         {publicKey
-          ? `${notes.length} notes for ${publicKey.slice(0, 6)}…${publicKey.slice(-6)} · ${chainCommitments.length} commitments`
+          ? `${notes.length} notes for ${publicKey.slice(0, 6)}…${publicKey.slice(-6)} · pool-0 ${poolChainCommitments[0]?.length ?? 0} commitments`
           : "Connect wallet to view account notes"}
       </p>
 

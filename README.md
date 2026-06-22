@@ -7,45 +7,49 @@ UTXO-style private payments on Stellar using zero-knowledge proofs.
 
 ## What it does
 
-- **Deposit** public tokens into a shielded note (on-chain commitment only)
-- **Shielded send** privately transfer a note to another user (zk1 / registered G… + on-chain ECDH delivery)
-- **Withdraw** to a public Stellar address without revealing the deposit link
+- **Join pool** — fixed-denomination shielded notes (1 / 10 / 100 XLM pools); only commitment appears on-chain
+- **Shielded send** — private transfer via zk1 address or pasted X25519 key (ECDH-encrypted note delivery)
+- **Exit pool** — ZK proof burns note; relayer pays recipient off-chain (no amount/recipient in vault events)
 
-Spending requires a Noir `transfer_actions` proof (up to 4 inputs + 4 outputs) verified on-chain via UltraHonk. With `NEXT_PUBLIC_ZK_MOCK_PROOF=false`, proofs are generated **in your browser** (`@aztec/bb.js`); mock verifier is demo-only.
+Spending requires a Noir `pool_actions` proof (up to 4 inputs + 4 outputs) verified on-chain via UltraHonk. With `NEXT_PUBLIC_ZK_MOCK_PROOF=false`, proofs are generated **in your browser** (`@aztec/bb.js`); mock verifier is demo-only.
 
 ## Demo video script (~2 min)
 
 1. **Connect** Freighter on testnet; header shows `ZK real`.
-2. **Notes** — create passkey, copy `zk1:testnet:…`, register G… on vault.
-3. **Deposit** 0.1 XLM → commitment on-chain (secrets stay local).
-4. **Send** to your own zk1 or a friend's registered G… — show `ProveProgress`, ~10–60s browser prove.
-5. **Withdraw** to a public G… address — observer cannot link deposit tx to withdraw tx.
-6. Mention: UTXO privacy model, height-16 tree cap, not audited.
+2. **Notes** — create passkey, copy `zk1:testnet:…` (no on-chain registration required).
+3. **Join** 1 XLM pool → commitment on-chain (secrets stay local).
+4. **Send** to a friend's zk1 address — show `ProveProgress`, ~10–60s browser prove.
+5. **Exit** — relayer pays your public G… address; observer cannot link join to exit from vault events alone.
+6. Mention: denomination pools, anonymity set badge, height-16 tree cap, not audited.
 
 **Web wallet config** (`web/.env.local`):
 
 ```
-NEXT_PUBLIC_VAULT_CONTRACT_ID=CDICJZDBJLGFDGRNJRKLQDFFPBZOUSMXO76ETBYLQSOGYVGWKNKLVSQP
+NEXT_PUBLIC_VAULT_CONTRACT_ID=<phase-c-vault>
 ZK_MOCK_PROOF=false
 NEXT_PUBLIC_ZK_MOCK_PROOF=false
+NEXT_PUBLIC_PRIVACY_MODE=strict
+NEXT_PUBLIC_RELAYER_URL=http://127.0.0.1:8787
+NEXT_PUBLIC_RELAYER_X25519_PUBLIC=<relayer-x25519-hex>
 ```
 
 ### Wallet features
 
-- **zk1 receive address** — X25519 key derived from passkey
-- **On-chain G… registry** — register zk1 receive key once; others can send to your G… address
-- **On-chain encrypted notes** — AES-GCM ciphertext + ephemeral key in `ShieldedSendEvent`
+- **zk1 receive address** — X25519 key derived from passkey; primary receive path (no chain registration)
+- **Pool anonymity badge** — weak / medium / strong from live `pool_leaf_count`
+- **On-chain encrypted notes** — AES-GCM ciphertext (512-byte padded) + ephemeral key in `ShieldedSendEvent`
+- **Relayer submission** — `strict` privacy mode posts signed XDR to relayer `/submit` (hides submitter link)
 - **Passkey root (WebAuthn PRF)** — no seed phrase; Touch ID / Face ID derives note secrets
 - **Recovery passkey** — backup authenticator wraps root seed for cross-device recovery
-- **Chain rescan** — recover deposits via vault events + derivation index scan
+- **Chain rescan** — recover joins via vault events + derivation index scan
 - **Stellar Wallets Kit** — Freighter, xBull, Albedo, Lobstr, WalletConnect, and more
 
 ## Architecture
 
 ```
 web/          → Next.js wallet (Stellar Wallets Kit + passkey + IndexedDB notes)
-circuits/     → Noir transfer_actions circuit (MAX 4×4)
-contracts/    → Soroban vault + verifier
+circuits/     → Noir pool_actions circuit (MAX 4×4, commitment v2)
+contracts/    → Soroban vault + verifier (3 denomination pools)
 cli/          → Rust developer CLI
 ```
 
@@ -63,31 +67,31 @@ See [design spec](docs/superpowers/specs/2026-06-13-utxo-private-payment-design.
 
 ```bash
 # Circuit tests
-cd circuits/transfer_actions && nargo test
+cd circuits/pool_actions && nargo test
 
-# Contract tests (11 tests incl. withdraw + negative paths)
+# Contract tests
 cd contracts && cargo test -p vault
 
 # Web wallet
 cp web/.env.local.example web/.env.local
 cd web && npm install && npm run dev
 
-# Headless testnet E2E
-STELLAR_SOURCE=admin ./scripts/e2e_testnet.sh --flow all
-
-# Dual-account: Alice deposit → send to Bob's G… → Bob withdraw
+# Phase C testnet E2E (join → send → exit → privacy audit)
 ./scripts/prepare_e2e_accounts.sh --fund alice bob
-ZK_MOCK_PROOF=false ./scripts/e2e_testnet.sh --flow alice-bob
+STELLAR_SOURCE=admin ./scripts/e2e_testnet.sh --flow phase-c
+
+# Privacy audit only
+npx tsx scripts/e2e/privacy-audit.ts --vault $VAULT_ID
 ```
 
 ## Status
 
 | Layer | Testnet demo | Real ZK (staging) |
 |-------|--------------|-------------------|
-| Vault + registry | ✅ deployed | ✅ UltraHonk verifier (~76M insn) |
-| Web flows | ✅ deposit / send / withdraw | ✅ browser + CLI proving |
+| Vault + pools | ✅ join / send / exit | ✅ UltraHonk pool_actions verifier |
+| Web flows | ✅ join / send / exit + privacy badge | ✅ browser + CLI proving |
 | Proofs | MockVerifier (`ZK_MOCK_PROOF=true`) | `@aztec/bb.js` in browser + `bb` CLI |
-| CI | ✅ circuits + contracts + web build | + real-ZK E2E job (optional) |
+| CI | ✅ circuits + contracts + web build | + `pool_actions` nargo test |
 
 ### Testnet contracts
 
@@ -121,6 +125,8 @@ STELLAR_SOURCE=admin ./scripts/deploy_testnet.sh --real-zk
 | `ZK_MOCK_PROOF` | `true` | **`false`** |
 | `NEXT_PUBLIC_ZK_MOCK_PROOF` | `true` | **`false`** (browser proving) |
 | `NEXT_PUBLIC_VAULT_LEGACY_SEND` | `false` | `false` |
+| `NEXT_PUBLIC_PRIVACY_MODE` | `dev` | **`strict`** (relayer submit) |
+| `NEXT_PUBLIC_RELAYER_URL` | optional | relayer `http://host:8787` |
 
 ## Known limitations (mainnet)
 

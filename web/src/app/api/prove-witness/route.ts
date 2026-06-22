@@ -43,7 +43,7 @@ export async function POST(request: Request) {
   try {
     const repoRoot = path.join(process.cwd(), "..");
     const proveScript = path.join(repoRoot, "scripts", "prove_from_witness.sh");
-    const proofFile = path.join(repoRoot, "artifacts", "transfer_actions", "proof");
+    const proofFile = path.join(repoRoot, "artifacts", "pool_actions", "proof");
     const tmpDir = await mkdtemp(path.join(os.tmpdir(), "zk-notes-witness-"));
     const witnessPath = path.join(tmpDir, "witness.json");
     let proofHex: string | null = null;

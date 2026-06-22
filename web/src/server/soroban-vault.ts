@@ -38,12 +38,17 @@ async function simulateVaultCall(
   return server.simulateTransaction(tx);
 }
 
-export async function getVaultLeafCount(sourcePublicKey: string): Promise<number> {
+export async function getVaultLeafCount(
+  sourcePublicKey: string,
+  poolId = 0
+): Promise<number> {
   const sim = await simulateVaultCall(sourcePublicKey, (contract, source) =>
     new TransactionBuilder(source, {
       fee: "100",
       networkPassphrase: networkPassphrase(),
-    }).addOperation(contract.call("leaf_count"))
+    }).addOperation(
+      contract.call("pool_leaf_count", nativeToScVal(poolId, { type: "u32" }))
+    )
   );
   if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
     return 0;
@@ -51,12 +56,17 @@ export async function getVaultLeafCount(sourcePublicKey: string): Promise<number
   return Number(scValToNative(sim.result.retval));
 }
 
-export async function getVaultMerkleRoot(sourcePublicKey: string): Promise<string> {
+export async function getVaultMerkleRoot(
+  sourcePublicKey: string,
+  poolId = 0
+): Promise<string> {
   const sim = await simulateVaultCall(sourcePublicKey, (contract, source) =>
     new TransactionBuilder(source, {
       fee: "100",
       networkPassphrase: networkPassphrase(),
-    }).addOperation(contract.call("get_root"))
+    }).addOperation(
+      contract.call("get_pool_root", nativeToScVal(poolId, { type: "u32" }))
+    )
   );
   if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
     throw new Error("Could not read vault merkle root");
@@ -67,14 +77,19 @@ export async function getVaultMerkleRoot(sourcePublicKey: string): Promise<strin
 
 export async function getVaultFilledAtLevel(
   sourcePublicKey: string,
-  level: number
+  level: number,
+  poolId = 0
 ): Promise<string | null> {
   const sim = await simulateVaultCall(sourcePublicKey, (contract, source) =>
     new TransactionBuilder(source, {
       fee: "100",
       networkPassphrase: networkPassphrase(),
     }).addOperation(
-      contract.call("get_filled_at_level", nativeToScVal(level, { type: "u32" }))
+      contract.call(
+        "get_filled_at_level",
+        nativeToScVal(poolId, { type: "u32" }),
+        nativeToScVal(level, { type: "u32" })
+      )
     )
   );
   if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
@@ -86,14 +101,19 @@ export async function getVaultFilledAtLevel(
 
 export async function getVaultZeroAtLevel(
   sourcePublicKey: string,
-  level: number
+  level: number,
+  poolId = 0
 ): Promise<string | null> {
   const sim = await simulateVaultCall(sourcePublicKey, (contract, source) =>
     new TransactionBuilder(source, {
       fee: "100",
       networkPassphrase: networkPassphrase(),
     }).addOperation(
-      contract.call("get_zero_at_level", nativeToScVal(level, { type: "u32" }))
+      contract.call(
+        "get_zero_at_level",
+        nativeToScVal(poolId, { type: "u32" }),
+        nativeToScVal(level, { type: "u32" })
+      )
     )
   );
   if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
@@ -105,6 +125,7 @@ export async function getVaultZeroAtLevel(
 
 export async function getVaultCommitmentAt(
   sourcePublicKey: string,
+  poolId: number,
   leafIndex: number
 ): Promise<string | null> {
   const sim = await simulateVaultCall(sourcePublicKey, (contract, source) =>
@@ -112,7 +133,11 @@ export async function getVaultCommitmentAt(
       fee: "100",
       networkPassphrase: networkPassphrase(),
     }).addOperation(
-      contract.call("get_commitment_at", nativeToScVal(leafIndex, { type: "u32" }))
+      contract.call(
+        "get_commitment_at",
+        nativeToScVal(poolId, { type: "u32" }),
+        nativeToScVal(leafIndex, { type: "u32" })
+      )
     )
   );
   if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
@@ -181,6 +206,7 @@ async function readVaultMerkleTreeFromLedger(): Promise<MerkleTreeStorage | null
 
 export async function readVaultTreeState(
   sourcePublicKey: string,
+  poolId = 0,
   height = 16
 ): Promise<VaultTreeState | null> {
   const filled: string[] = [];
@@ -188,8 +214,8 @@ export async function readVaultTreeState(
   let usedContractFns = true;
 
   for (let level = 0; level < height; level++) {
-    const f = await getVaultFilledAtLevel(sourcePublicKey, level);
-    const z = await getVaultZeroAtLevel(sourcePublicKey, level);
+    const f = await getVaultFilledAtLevel(sourcePublicKey, level, poolId);
+    const z = await getVaultZeroAtLevel(sourcePublicKey, level, poolId);
     if (!f || !z) {
       usedContractFns = false;
       break;

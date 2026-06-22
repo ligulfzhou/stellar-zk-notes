@@ -3,6 +3,7 @@ import { randomBytes } from "@noble/ciphers/utils.js";
 import { x25519 } from "@noble/curves/ed25519.js";
 import { hkdf } from "@noble/hashes/hkdf.js";
 import { sha256 } from "@noble/hashes/sha2.js";
+import { ENCRYPTED_NOTE_SIZE } from "./pool-config";
 
 export type DeliveredNotePayload = {
   value: string;
@@ -29,10 +30,22 @@ export function encryptNoteForRecipient(
   const nonce = randomBytes(12);
   const plaintext = new TextEncoder().encode(JSON.stringify(payload));
   const ciphertext = gcm(key, nonce, NOTE_AAD).encrypt(plaintext);
-  const encrypted = new Uint8Array(nonce.length + ciphertext.length);
-  encrypted.set(nonce, 0);
-  encrypted.set(ciphertext, nonce.length);
-  return { epk, encrypted };
+  const raw = new Uint8Array(nonce.length + ciphertext.length);
+  raw.set(nonce, 0);
+  raw.set(ciphertext, nonce.length);
+  return { epk, encrypted: padEncryptedNote(raw) };
+}
+
+/** Pad ciphertext to fixed on-chain size (metadata hardening). */
+export function padEncryptedNote(encrypted: Uint8Array): Uint8Array {
+  if (encrypted.length > ENCRYPTED_NOTE_SIZE) {
+    throw new Error(
+      `Encrypted note too large (${encrypted.length} > ${ENCRYPTED_NOTE_SIZE})`
+    );
+  }
+  const padded = new Uint8Array(ENCRYPTED_NOTE_SIZE);
+  padded.set(encrypted, 0);
+  return padded;
 }
 
 export function tryDecryptNote(

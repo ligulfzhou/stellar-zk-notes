@@ -29,11 +29,11 @@ for arg in "$@"; do
 Usage: STELLAR_SOURCE=<account> ./scripts/deploy_testnet.sh [--real-zk]
 
   (default)   MockVerifier — accepts any proof (ZK_MOCK_PROOF=true)
-  --real-zk   UltraHonk verifier with transfer_actions VK (requires bb + VK built)
+  --real-zk   UltraHonk verifier with pool_actions VK (requires bb + VK built)
 
 Before --real-zk:
   ./scripts/install_zk_tools.sh
-  ./scripts/build_vk.sh
+  ./scripts/build_vk_pool_actions.sh
   ./scripts/build_ultrahonk_verifier.sh
 
 Set STELLAR_RPC_URL and STELLAR_NETWORK_PASSPHRASE when using a custom RPC.
@@ -48,9 +48,9 @@ cd "$ROOT/contracts"
 stellar contract build --package vault
 
 if [[ "$REAL_ZK" == true ]]; then
-  VK="$ROOT/artifacts/transfer_actions/vk"
+  VK="$ROOT/artifacts/pool_actions/vk"
   if [[ ! -f "$VK" ]]; then
-    echo "VK missing — run ./scripts/build_vk.sh first" >&2
+    echo "VK missing — run ./scripts/build_vk_pool_actions.sh first" >&2
     exit 1
   fi
   "$ROOT/scripts/build_ultrahonk_verifier.sh"
