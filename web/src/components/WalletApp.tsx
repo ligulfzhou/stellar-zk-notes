@@ -8,7 +8,6 @@ import { NotesPanel } from "@/components/NotesPanel";
 import { ExitPanel } from "@/components/ExitPanel";
 import { PasskeyUnlockBanner } from "@/components/PasskeyUnlockBanner";
 import { DevPrivacyWarning } from "@/components/DevPrivacyWarning";
-import { ZkModeBadge } from "@/components/ZkModeBadge";
 import { useWalletStore } from "@/store/useWalletStore";
 import { initWalletsKit } from "@/lib/wallet";
 
@@ -44,7 +43,6 @@ export function WalletApp() {
             <h1 className="text-xl font-semibold">zk-tornado</h1>
           </div>
           <div className="flex items-center gap-3">
-            <ZkModeBadge />
             <ConnectButton />
           </div>
         </div>

@@ -67,6 +67,14 @@ export async function POST(request: Request) {
           );
         }
         proofHex = "0x" + proofBuf.toString("hex");
+      } else if (!mockProof) {
+        return NextResponse.json(
+          {
+            error:
+              "Real ZK requires Barretenberg `bb` on the server PATH, or use browser proving. Run: ./scripts/install_zk_tools.sh",
+          },
+          { status: 503 }
+        );
       }
     } finally {
       await rm(tmpDir, { recursive: true, force: true });
@@ -75,6 +83,13 @@ export async function POST(request: Request) {
     const merkleRootHex = fieldDecToHex(witness.merkle_root);
     const nullifierHexes = witness.nullifier.map(fieldDecToHex);
     const newCommitmentHexes = witness.new_commitment.map(fieldDecToHex);
+
+    if (!mockProof && !proofHex) {
+      return NextResponse.json(
+        { error: "Failed to generate Real ZK proof" },
+        { status: 503 }
+      );
+    }
 
     return NextResponse.json({
       merkleRoot: merkleRootHex,

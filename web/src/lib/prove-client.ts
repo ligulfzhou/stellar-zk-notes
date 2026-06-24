@@ -1,6 +1,7 @@
 import { isMockProofClient } from "./proof-config";
 import {
   mockProofHex,
+  PROOF_BYTES,
   proveSpendInBrowser,
   type ProveOptions,
   type ProveProgressCallback,
@@ -58,6 +59,12 @@ async function proveWitnessOnServer(
   if (!res.ok || !data.merkleRoot || !data.publicInputs) {
     throw new Error(data.error ?? "Prove witness failed");
   }
+  if (!isMockProofClient() && (!data.proofHex || !data.proofReady)) {
+    throw new Error(
+      data.error ??
+        "Server could not generate Real ZK proof (install bb: ./scripts/install_zk_tools.sh). Browser proving is preferred."
+    );
+  }
   return { ...data, provedLocally: false };
 }
 
@@ -77,13 +84,24 @@ export async function proveWitness(
   if (typeof window !== "undefined") {
     try {
       const proofHex = await proveSpendInBrowser(witness, onProgress, signal);
+      if (proofHex.length !== 2 + PROOF_BYTES * 2) {
+        throw new Error(`Browser returned invalid proof length`);
+      }
       return resultFromWitness(witness, proofHex, false, true);
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         throw error;
       }
+      const detail = error instanceof Error ? error.message : String(error);
       console.warn("Browser prove failed, falling back to server:", error);
       onProgress?.("proving", "Falling back to server prover…");
+      try {
+        return await proveWitnessOnServer(witness);
+      } catch (serverErr) {
+        throw new Error(
+          `Browser ZK proof failed (${detail}). Server fallback also failed: ${serverErr instanceof Error ? serverErr.message : serverErr}`
+        );
+      }
     }
   }
 
