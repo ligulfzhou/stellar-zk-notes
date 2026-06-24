@@ -146,8 +146,7 @@ async function generateRealProof(witnessPayload: Record<string, unknown>): Promi
   }
 }
 
-export async function proveSpend(params: {
-  mode: "shielded_send" | "exit";
+export async function proveExit(params: {
   poolId: number;
   value: string;
   secret: string;
@@ -156,9 +155,6 @@ export async function proveSpend(params: {
   leafIndex: number;
   commitmentHex: string;
   reader: string;
-  newSecret?: string;
-  newNullifierSecret?: string;
-  newDepositSecret?: Uint8Array;
   relayerFeeStroops?: string;
 }): Promise<ProveResult> {
   const chain = await buildChainState(
@@ -222,31 +218,8 @@ export async function proveSpend(params: {
     );
   }
 
-  let newCommitmentHex = "0x0";
-  let publicAmount = "0";
-  let relayerFee = "0";
-  let newSecret = "0";
-  let newNullifierSecret = "0";
-  let newDepositSecretField = "0";
-
-  if (params.mode === "shielded_send") {
-    if (!params.newSecret || !params.newNullifierSecret || !params.newDepositSecret) {
-      throw new Error("newSecret, newNullifierSecret, and newDepositSecret required for send");
-    }
-    newSecret = params.newSecret;
-    newNullifierSecret = params.newNullifierSecret;
-    newDepositSecretField = depositSecretToField(params.newDepositSecret);
-    newCommitmentHex = await computeCommitmentV2({
-      valueStroops: BigInt(params.value),
-      secret: newSecret,
-      nullifierSecret: newNullifierSecret,
-      depositSecret: params.newDepositSecret,
-      poolId: params.poolId,
-    });
-  } else {
-    publicAmount = POOLS[params.poolId]?.stroops.toString() ?? params.value;
-    relayerFee = params.relayerFeeStroops ?? "0";
-  }
+  const publicAmount = POOLS[params.poolId]?.stroops.toString() ?? params.value;
+  const relayerFee = params.relayerFeeStroops ?? "0";
 
   const merkleRootHex = "0x" + root.toString(16).padStart(64, "0");
   const witnessRoot =
@@ -264,17 +237,14 @@ export async function proveSpend(params: {
     spend_deposit_secret: pad4([depositSecretToField(params.depositSecret)], "0"),
     spend_merkle_path: [merklePath.map((p) => p.toString()), emptyPath, emptyPath, emptyPath],
     spend_path_indices: [indices, emptyIdx, emptyIdx, emptyIdx],
-    out_value: pad4(params.mode === "shielded_send" ? [params.value] : [], "0"),
-    out_secret: pad4(params.mode === "shielded_send" ? [newSecret] : [], "0"),
-    out_nullifier_secret: pad4(params.mode === "shielded_send" ? [newNullifierSecret] : [], "0"),
-    out_deposit_secret: pad4(params.mode === "shielded_send" ? [newDepositSecretField] : [], "0"),
+    out_value: pad4([], "0"),
+    out_secret: pad4([], "0"),
+    out_nullifier_secret: pad4([], "0"),
+    out_deposit_secret: pad4([], "0"),
     pool_id: params.poolId.toString(),
     merkle_root: witnessRoot,
     nullifier: pad4([fieldHexToDecimal(nullifierHex)], "0"),
-    new_commitment: pad4(
-      params.mode === "shielded_send" ? [BigInt(newCommitmentHex).toString()] : [],
-      "0"
-    ),
+    new_commitment: pad4([], "0"),
     public_amount: publicAmount,
     relayer_fee: relayerFee,
   };
@@ -287,16 +257,13 @@ export async function proveSpend(params: {
   }
 
   const nullifierHexes = pad4([nullifierHex], "0x0");
-  const newCommitmentHexes = pad4(
-    params.mode === "shielded_send" ? [newCommitmentHex] : [],
-    "0x0"
-  );
+  const newCommitmentHexes = pad4([], "0x0");
 
   return {
     merkleRoot: merkleRootHex,
     nullifierHex,
     nullifierHexes,
-    newCommitmentHex,
+    newCommitmentHex: "0x0",
     newCommitmentHexes,
     publicInputs: {
       pool_id: params.poolId.toString(),
@@ -309,3 +276,6 @@ export async function proveSpend(params: {
     proofBytes,
   };
 }
+
+/** @deprecated use proveExit */
+export const proveSpend = proveExit;

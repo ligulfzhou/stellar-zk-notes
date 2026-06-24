@@ -31,9 +31,33 @@ type PrfExtensionResults = {
   results?: { first?: ArrayBuffer };
 };
 
+/** WebAuthn rpId must match the page hostname (localhost ≠ 127.0.0.1). */
 function getRpId(): string {
-  const host = window.location.hostname;
-  return host === "127.0.0.1" ? "localhost" : host;
+  return window.location.hostname || "localhost";
+}
+
+function wrapPasskeyError(err: unknown): never {
+  if (err instanceof DOMException && /invalid domain/i.test(err.message)) {
+    const host = window.location.hostname;
+    throw new Error(
+      host === "127.0.0.1"
+        ? "WebAuthn invalid domain — open http://localhost:3000 instead of 127.0.0.1."
+        : `WebAuthn invalid domain for "${host}". Use localhost in dev or HTTPS on a real domain.`
+    );
+  }
+  throw err;
+}
+
+/** Shown in UI when the current origin may break WebAuthn. */
+export function passkeyOriginHint(): string | null {
+  if (typeof window === "undefined") return null;
+  if (window.location.hostname === "127.0.0.1") {
+    return "For passkeys, use http://localhost:3000 — some browsers reject 127.0.0.1.";
+  }
+  if (window.location.protocol !== "https:" && window.location.hostname !== "localhost") {
+    return "Passkeys require localhost or HTTPS.";
+  }
+  return null;
 }
 
 function bufferCopy(bytes: Uint8Array): Uint8Array {
@@ -97,28 +121,33 @@ export async function registerPrimaryPasskey(
   const prfSalt = crypto.getRandomValues(new Uint8Array(32));
   const challenge = crypto.getRandomValues(new Uint8Array(32));
 
-  const credential = (await navigator.credentials.create({
-    publicKey: {
-      rp: { name: "zk-notes", id: getRpId() },
-      user: {
-        id: userId as BufferSource,
-        name: "shielded-wallet",
-        displayName: "zk-notes Shielded Wallet",
+  let credential: PublicKeyCredential | null;
+  try {
+    credential = (await navigator.credentials.create({
+      publicKey: {
+        rp: { name: "zk-tornado", id: getRpId() },
+        user: {
+          id: userId as BufferSource,
+          name: "shielded-wallet",
+          displayName: "zk-tornado Pool Wallet",
+        },
+        challenge,
+        pubKeyCredParams: [
+          { alg: -7, type: "public-key" },
+          { alg: -257, type: "public-key" },
+        ],
+        authenticatorSelection: {
+          userVerification: "required",
+          residentKey: "preferred",
+        },
+        extensions: {
+          prf: { eval: { first: prfSalt as BufferSource } },
+        },
       },
-      challenge,
-      pubKeyCredParams: [
-        { alg: -7, type: "public-key" },
-        { alg: -257, type: "public-key" },
-      ],
-      authenticatorSelection: {
-        userVerification: "required",
-        residentKey: "preferred",
-      },
-      extensions: {
-        prf: { eval: { first: prfSalt as BufferSource } },
-      },
-    },
-  })) as PublicKeyCredential | null;
+    })) as PublicKeyCredential | null;
+  } catch (err) {
+    wrapPasskeyError(err);
+  }
 
   if (!credential) {
     throw new Error("Passkey registration cancelled");
@@ -165,17 +194,22 @@ export async function unlockPasskey(
         type: "public-key" as PublicKeyCredentialDescriptor["type"],
       }));
 
-  const assertion = (await navigator.credentials.get({
-    publicKey: {
-      challenge,
-      rpId: getRpId(),
-      allowCredentials,
-      userVerification: "required",
-      extensions: {
-        prf: { eval: { first: prfSalt as BufferSource } },
+  let assertion: PublicKeyCredential | null;
+  try {
+    assertion = (await navigator.credentials.get({
+      publicKey: {
+        challenge,
+        rpId: getRpId(),
+        allowCredentials,
+        userVerification: "required",
+        extensions: {
+          prf: { eval: { first: prfSalt as BufferSource } },
+        },
       },
-    },
-  })) as PublicKeyCredential | null;
+    })) as PublicKeyCredential | null;
+  } catch (err) {
+    wrapPasskeyError(err);
+  }
 
   if (!assertion) {
     throw new Error("Passkey unlock cancelled");
@@ -208,28 +242,33 @@ export async function registerRecoveryPasskey(
   const prfSalt = bufferCopy(fromB64url(config.prfSalt));
   const challenge = crypto.getRandomValues(new Uint8Array(32));
 
-  const credential = (await navigator.credentials.create({
-    publicKey: {
-      rp: { name: "zk-notes", id: getRpId() },
-      user: {
-        id: userId as BufferSource,
-        name: "shielded-wallet",
-        displayName: "zk-notes Shielded Wallet",
+  let credential: PublicKeyCredential | null;
+  try {
+    credential = (await navigator.credentials.create({
+      publicKey: {
+        rp: { name: "zk-tornado", id: getRpId() },
+        user: {
+          id: userId as BufferSource,
+          name: "shielded-wallet",
+          displayName: "zk-tornado Pool Wallet",
+        },
+        challenge,
+        pubKeyCredParams: [
+          { alg: -7, type: "public-key" },
+          { alg: -257, type: "public-key" },
+        ],
+        authenticatorSelection: {
+          userVerification: "required",
+          residentKey: "preferred",
+        },
+        extensions: {
+          prf: { eval: { first: prfSalt as BufferSource } },
+        },
       },
-      challenge,
-      pubKeyCredParams: [
-        { alg: -7, type: "public-key" },
-        { alg: -257, type: "public-key" },
-      ],
-      authenticatorSelection: {
-        userVerification: "required",
-        residentKey: "preferred",
-      },
-      extensions: {
-        prf: { eval: { first: prfSalt as BufferSource } },
-      },
-    },
-  })) as PublicKeyCredential | null;
+    })) as PublicKeyCredential | null;
+  } catch (err) {
+    wrapPasskeyError(err);
+  }
 
   if (!credential) {
     throw new Error("Recovery passkey registration cancelled");

@@ -132,7 +132,15 @@ ZK_MOCK_PROOF=false ./scripts/e2e_testnet.sh --flow phase-c
 | MockVerifier | `CBEVEL2RO4K7HCJR7IWA5EJXXH4YKDIH4GVILKRPC4L6SOBXUMKK7IKW` |
 | Native XLM SAC | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
 
-**Real ZK (`--real-zk`):**
+**Real ZK — Phase B (2026-06-24, exit-only vault):**
+
+| Contract | ID |
+|----------|-----|
+| Vault | `CCSA45EVCX3JJDE5OIGJFGWAQPYWD65MMTQZKL66ZILZDMVAUXZXLV4H` |
+| UltraHonk Verifier | `CA6RD6K36U3QERNRMX6DBDK6ZP2VRSCXSD7MSMLJ22NDAIQWJKQ57CFR` |
+| Native XLM SAC | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
+
+**Legacy (pre–Phase B, includes shielded_transfer):**
 
 | Contract | ID |
 |----------|-----|
@@ -141,7 +149,15 @@ ZK_MOCK_PROOF=false ./scripts/e2e_testnet.sh --flow phase-c
 
 Set `ZK_MOCK_PROOF=false` and `NEXT_PUBLIC_ZK_MOCK_PROOF=false` in `web/.env.local` after `--real-zk` deploy. Proving defaults to browser `@aztec/bb.js` (keccak); server `/api/prove-witness` is fallback only.
 
-## 5. Generate spend proof
+## Phase B (Tornado-only)
+
+After Phase B the vault exposes **`join_pool`** and **`exit_pool` only** — no `shielded_transfer`, no on-chain shielded key registry. The `pool_actions` circuit enforces `public_amount > 0` (exit-only proofs).
+
+**Redeploy required:** contract change + recompile circuit + `./scripts/build_vk_pool_actions.sh` + `./scripts/deploy_testnet.sh --real-zk` for real ZK. Mock verifier deploy works without VK rebuild for E2E with `ZK_MOCK_PROOF=true`.
+
+Demo script: [docs/demo-script-en.md](demo-script-en.md)
+
+## 5. Generate exit proof
 
 ```bash
 # From Prover.toml (after nargo execute):
@@ -151,32 +167,21 @@ Set `ZK_MOCK_PROOF=false` and `NEXT_PUBLIC_ZK_MOCK_PROOF=false` in `web/.env.loc
 ./scripts/prove_from_witness.sh /path/to/witness.json
 ```
 
-Submit `shielded_transfer` or `exit_pool` with 384-byte `public_inputs` (pool_id + exit_hash) and proof bytes from `pool_actions` artifacts.
+Submit `exit_pool` with 384-byte `public_inputs` (12 BN254 fields) and proof bytes from `pool_actions` artifacts.
 
-### shielded_transfer (Phase C)
+### exit_pool
 
 ```bash
 stellar contract invoke --id <VAULT_ID> --network testnet --source <ACCOUNT> -- \
-  shielded_send \
-  --nullifier <BYTESN32> \
-  --new_commitment <BYTESN32> \
-  --merkle_root <BYTESN32> \
-  --public_inputs <BYTES> \
-  --proof_bytes <BYTES> \
-  --epk <BYTESN32> \
-  --encrypted_note <BYTES>
+  exit_pool \
+  --pool_id 0 \
+  --recipient <G…> \
+  --relayer <G…> \
+  --nullifier0 <BYTESN32> \
+  ...
 ```
 
-`epk` is the sender's X25519 ephemeral public key; `encrypted_note` is AES-GCM ciphertext (max 512 bytes). The web wallet encrypts `{value, secret, nullifierSecret, commitment, leafIndex}` for zk1 recipients.
-
-### zk1 addresses
-
-```bash
-node scripts/shielded_address.mjs "your twelve words ..." testnet
-# or: cargo run -p zk-notes -- shielded-address "..." testnet
-```
-
-Share the `zk1:testnet:…` string; recipients decrypt with the same passkey.
+See `web/src/lib/stellar.ts` (`exitPoolOnVault`) for the full argument layout.
 
 ### G… shielded registry
 

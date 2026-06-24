@@ -28,12 +28,26 @@ type VaultEventsApiResponse = {
   missing?: number | null;
 };
 
+type VaultNoteRef = {
+  leafIndex: number;
+  commitment: string;
+  poolId?: number;
+};
+
+function notesForApi(notes: VaultNoteRef[]) {
+  return notes.map((n) => ({
+    leafIndex: n.leafIndex,
+    commitment: n.commitment,
+    poolId: n.poolId ?? 0,
+  }));
+}
+
 /** Fetch vault events and Merkle state via server API (browser cannot call Soroban RPC). */
 export async function fetchVaultChainState(params: {
   reader?: string;
   localPoolCommitments?: string[][];
   localCommitments?: string[];
-  notes?: Array<{ leafIndex: number; commitment: string; poolId?: number }>;
+  notes?: VaultNoteRef[];
   requireComplete?: boolean;
 }): Promise<VaultChainState> {
   const localPool =
@@ -46,7 +60,7 @@ export async function fetchVaultChainState(params: {
     body: JSON.stringify({
       reader: params.reader,
       localPoolCommitments: localPool,
-      notes: params.notes ?? [],
+      notes: notesForApi(params.notes ?? []),
       requireComplete: params.requireComplete ?? false,
     }),
   });

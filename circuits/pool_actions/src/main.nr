@@ -107,9 +107,8 @@ fn verify_output_slot(
   }
 }
 
-/// Pool-scoped action bundle: up to MAX_SPENDS inputs and MAX_OUTPUTS shielded outputs.
-/// Balance: sum(spend_value) == sum(out_value) + public_amount.
-/// Exit: public_amount > 0 requires relayer_fee <= public_amount and no shielded outputs.
+/// Pool-scoped exit proof: spend note(s) and withdraw public_amount (Tornado-style).
+/// In-pool shielded transfers are not supported (public_amount must be non-zero).
 fn main(
   spend_value: [Field; MAX_SPENDS],
   spend_secret: [Field; MAX_SPENDS],
@@ -134,13 +133,10 @@ fn main(
     }
   }
 
-  if public_amount != 0 {
-    assert(relayer_fee as u64 <= public_amount as u64);
-    for j in 0..MAX_OUTPUTS {
-      assert(new_commitment[j] == 0);
-    }
-  } else {
-    assert(relayer_fee == 0);
+  assert(public_amount != 0);
+  assert(relayer_fee as u64 <= public_amount as u64);
+  for j in 0..MAX_OUTPUTS {
+    assert(new_commitment[j] == 0);
   }
 
   let mut spend_sum = 0;
@@ -198,31 +194,6 @@ fn root_for_first_leaf(leaf: Field) -> Field {
 fn first_leaf_merkle_witness() -> ([Field; TREE_HEIGHT], [bool; TREE_HEIGHT]) {
   let zeros = empty_tree_zeros();
   (zeros, [false; TREE_HEIGHT])
-}
-
-fn first_leaf_merkle_witness_with_sibling(sibling: Field) -> ([Field; TREE_HEIGHT], [bool; TREE_HEIGHT]) {
-  let zeros = empty_tree_zeros();
-  let mut path = zeros;
-  path[0] = sibling;
-  (path, [false; TREE_HEIGHT])
-}
-
-fn second_leaf_merkle_witness(first_leaf: Field) -> ([Field; TREE_HEIGHT], [bool; TREE_HEIGHT]) {
-  let zeros = empty_tree_zeros();
-  let mut path = zeros;
-  path[0] = first_leaf;
-  let mut indices = [false; TREE_HEIGHT];
-  indices[0] = true;
-  (path, indices)
-}
-
-fn root_for_two_leaves(left: Field, right: Field) -> Field {
-  let zeros = empty_tree_zeros();
-  let mut current = hash_pair(left, right);
-  for i in 1..TREE_HEIGHT {
-    current = hash_pair(current, zeros[i]);
-  }
-  current
 }
 
 fn zero_spend_paths() -> ([[Field; TREE_HEIGHT]; MAX_SPENDS], [[bool; TREE_HEIGHT]; MAX_SPENDS]) {
@@ -290,50 +261,6 @@ fn test_commitment_v2_and_nullifier_consistency() {
 }
 
 #[test]
-fn test_shielded_send_1x1_via_pool_actions() {
-  let pool_id = 0;
-  let value = JOIN_AMOUNT_0;
-  let secret = 11;
-  let ns = 22;
-  let ds = 33;
-  let c = compute_commitment_v2(value, secret, ns, ds, pool_id);
-  let nf = compute_nullifier(ns, c);
-
-  let out_s = 44;
-  let out_ns = 55;
-  let out_ds = 66;
-  let nc = compute_commitment_v2(value, out_s, out_ns, out_ds, pool_id);
-
-  let (path, idx) = first_leaf_merkle_witness();
-  let root = root_for_first_leaf(c);
-  let (zero_paths, zero_idx) = zero_spend_paths();
-
-  let mut paths = zero_paths;
-  paths[0] = path;
-  let mut indices = zero_idx;
-  indices[0] = idx;
-
-  invoke_pool_transfer(
-    [value, 0, 0, 0],
-    [secret, 0, 0, 0],
-    [ns, 0, 0, 0],
-    [ds, 0, 0, 0],
-    paths,
-    indices,
-    [value, 0, 0, 0],
-    [out_s, 0, 0, 0],
-    [out_ns, 0, 0, 0],
-    [out_ds, 0, 0, 0],
-    pool_id,
-    root,
-    [nf, 0, 0, 0],
-    [nc, 0, 0, 0],
-    0,
-    0,
-  );
-}
-
-#[test]
 fn test_exit_via_pool_actions() {
   let pool_id = 0;
   let value = JOIN_AMOUNT_0;
@@ -371,194 +298,6 @@ fn test_exit_via_pool_actions() {
     [0, 0, 0, 0],
     value,
     fee,
-  );
-}
-
-#[test]
-fn test_shielded_send_2x2_via_pool_actions() {
-  let pool_id = 0;
-  let v0 = JOIN_AMOUNT_0;
-  let s0 = 11;
-  let ns0 = 22;
-  let ds0 = 33;
-  let c0 = compute_commitment_v2(v0, s0, ns0, ds0, pool_id);
-  let nf0 = compute_nullifier(ns0, c0);
-
-  let v1 = JOIN_AMOUNT_0;
-  let s1 = 44;
-  let ns1 = 55;
-  let ds1 = 66;
-  let c1 = compute_commitment_v2(v1, s1, ns1, ds1, pool_id);
-  let nf1 = compute_nullifier(ns1, c1);
-
-  let payee = JOIN_AMOUNT_0;
-  let change = JOIN_AMOUNT_0;
-  let out0s = 77;
-  let out0ns = 88;
-  let out0ds = 99;
-  let out1s = 100;
-  let out1ns = 101;
-  let out1ds = 102;
-  let nc0 = compute_commitment_v2(payee, out0s, out0ns, out0ds, pool_id);
-  let nc1 = compute_commitment_v2(change, out1s, out1ns, out1ds, pool_id);
-
-  let (path0, idx0) = first_leaf_merkle_witness_with_sibling(c1);
-  let (path1, idx1) = second_leaf_merkle_witness(c0);
-  let root = root_for_two_leaves(c0, c1);
-
-  invoke_pool_transfer(
-    [v0, v1, 0, 0],
-    [s0, s1, 0, 0],
-    [ns0, ns1, 0, 0],
-    [ds0, ds1, 0, 0],
-    [path0, path1, [0; TREE_HEIGHT], [0; TREE_HEIGHT]],
-    [idx0, idx1, [false; TREE_HEIGHT], [false; TREE_HEIGHT]],
-    [payee, change, 0, 0],
-    [out0s, out1s, 0, 0],
-    [out0ns, out1ns, 0, 0],
-    [out0ds, out1ds, 0, 0],
-    pool_id,
-    root,
-    [nf0, nf1, 0, 0],
-    [nc0, nc1, 0, 0],
-    0,
-    0,
-  );
-}
-
-#[test]
-fn test_4_in_2_out_via_pool_actions() {
-  let pool_id = 0;
-  let v = JOIN_AMOUNT_0;
-  let total = v + v + v + v;
-  let payee = v + v;
-  let change = v + v;
-
-  let s0 = 1;
-  let ns0 = 2;
-  let ds0 = 3;
-  let c0 = compute_commitment_v2(v, s0, ns0, ds0, pool_id);
-  let nf0 = compute_nullifier(ns0, c0);
-
-  let s1 = 4;
-  let ns1 = 5;
-  let ds1 = 6;
-  let c1 = compute_commitment_v2(v, s1, ns1, ds1, pool_id);
-  let nf1 = compute_nullifier(ns1, c1);
-
-  let s2 = 7;
-  let ns2 = 8;
-  let ds2 = 9;
-  let c2 = compute_commitment_v2(v, s2, ns2, ds2, pool_id);
-  let nf2 = compute_nullifier(ns2, c2);
-
-  let s3 = 10;
-  let ns3 = 11;
-  let ds3 = 12;
-  let c3 = compute_commitment_v2(v, s3, ns3, ds3, pool_id);
-  let nf3 = compute_nullifier(ns3, c3);
-
-  assert(v + v + v + v == total);
-  assert(payee + change == total);
-
-  let zeros = empty_tree_zeros();
-  let l01 = hash_pair(c0, c1);
-  let l23 = hash_pair(c2, c3);
-  let l0123 = hash_pair(l01, l23);
-  let mut root = l0123;
-  for i in 2..TREE_HEIGHT {
-    root = hash_pair(root, zeros[i]);
-  }
-
-  let mut path0 = zeros;
-  path0[0] = c1;
-  path0[1] = l23;
-  let mut idx0 = [false; TREE_HEIGHT];
-  idx0[0] = false;
-
-  let mut path1 = zeros;
-  path1[0] = c0;
-  path1[1] = l23;
-  let mut idx1 = [false; TREE_HEIGHT];
-  idx1[0] = true;
-
-  let mut path2 = zeros;
-  path2[0] = c3;
-  path2[1] = l01;
-  let mut idx2 = [false; TREE_HEIGHT];
-  idx2[0] = false;
-  idx2[1] = true;
-
-  let mut path3 = zeros;
-  path3[0] = c2;
-  path3[1] = l01;
-  let mut idx3 = [false; TREE_HEIGHT];
-  idx3[0] = true;
-  idx3[1] = true;
-
-  let out0s = 20;
-  let out0ns = 21;
-  let out0ds = 22;
-  let out1s = 23;
-  let out1ns = 24;
-  let out1ds = 25;
-  let nc0 = compute_commitment_v2(payee, out0s, out0ns, out0ds, pool_id);
-  let nc1 = compute_commitment_v2(change, out1s, out1ns, out1ds, pool_id);
-
-  invoke_pool_transfer(
-    [v, v, v, v],
-    [s0, s1, s2, s3],
-    [ns0, ns1, ns2, ns3],
-    [ds0, ds1, ds2, ds3],
-    [path0, path1, path2, path3],
-    [idx0, idx1, idx2, idx3],
-    [payee, change, 0, 0],
-    [out0s, out1s, 0, 0],
-    [out0ns, out1ns, 0, 0],
-    [out0ds, out1ds, 0, 0],
-    pool_id,
-    root,
-    [nf0, nf1, nf2, nf3],
-    [nc0, nc1, 0, 0],
-    0,
-    0,
-  );
-}
-
-#[test]
-fn test_max_4x4_padding_stress() {
-  let pool_id = 0;
-  let v = JOIN_AMOUNT_0;
-  let s = 1;
-  let ns = 2;
-  let ds = 3;
-  let c = compute_commitment_v2(v, s, ns, ds, pool_id);
-  let nf = compute_nullifier(ns, c);
-  let out_s = 4;
-  let out_ns = 5;
-  let out_ds = 6;
-  let nc = compute_commitment_v2(v, out_s, out_ns, out_ds, pool_id);
-
-  let (path, idx) = first_leaf_merkle_witness();
-  let root = root_for_first_leaf(c);
-
-  invoke_pool_transfer(
-    [v, 0, 0, 0],
-    [s, 0, 0, 0],
-    [ns, 0, 0, 0],
-    [ds, 0, 0, 0],
-    [path, [0; TREE_HEIGHT], [0; TREE_HEIGHT], [0; TREE_HEIGHT]],
-    [idx, [false; TREE_HEIGHT], [false; TREE_HEIGHT], [false; TREE_HEIGHT]],
-    [v, 0, 0, 0],
-    [out_s, 0, 0, 0],
-    [out_ns, 0, 0, 0],
-    [out_ds, 0, 0, 0],
-    pool_id,
-    root,
-    [nf, 0, 0, 0],
-    [nc, 0, 0, 0],
-    0,
-    0,
   );
 }
 

@@ -19,7 +19,7 @@ export const NATIVE_XLM_SAC =
   process.env.NEXT_PUBLIC_NATIVE_XLM_SAC ??
   "CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC";
 
-/** @deprecated pre-Phase-B vaults only; current vault uses shielded_transfer (16 args). */
+/** @deprecated legacy vault API */
 export const VAULT_LEGACY_SEND =
   process.env.NEXT_PUBLIC_VAULT_LEGACY_SEND === "true";
 

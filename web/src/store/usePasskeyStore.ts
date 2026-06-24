@@ -41,11 +41,16 @@ export const usePasskeyStore = create<PasskeySessionState>((set, get) => ({
   unlock: async () => {
     set({ unlocking: true, error: null });
     try {
-      const passkey = await getPasskeyConfig();
+      let passkey = await getPasskeyConfig();
+      let rootSeed: Uint8Array;
       if (!passkey) {
-        throw new Error("No passkey configured — register in Notes first");
+        const { config, rootSeed: seed } = await registerPrimaryPasskey();
+        const publicKey = useWalletStore.getState().publicKey;
+        await savePasskeyConfig(config, publicKey);
+        rootSeed = seed;
+      } else {
+        rootSeed = await unlockPasskey(passkey);
       }
-      const rootSeed = await unlockPasskey(passkey);
       set({ rootSeed, unlocked: true, unlocking: false });
       return rootSeed;
     } catch (err) {

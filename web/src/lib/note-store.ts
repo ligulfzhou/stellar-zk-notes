@@ -134,8 +134,13 @@ export async function loadVault(
     return withGlobalPasskey(defaultVault(), passkey);
   }
 
-  const raw = await get<LegacyVault | StoredNoteVault>(vaultKeyFor(activePubkey));
-  return withGlobalPasskey(migrateVault(raw), passkey);
+  const raw = await get<LegacyVault | StoredNoteVault | SerializedVault>(
+    vaultKeyFor(activePubkey)
+  );
+  if (raw && "version" in raw && raw.version === 4 && raw.notes?.[0] && typeof raw.notes[0].value === "string") {
+    return withGlobalPasskey(deserializeVault(raw as SerializedVault), passkey);
+  }
+  return withGlobalPasskey(migrateVault(raw as LegacyVault | StoredNoteVault | undefined), passkey);
 }
 
 export async function loadNotes(activePubkey: string): Promise<Note[]> {
@@ -157,7 +162,9 @@ export async function saveVault(
   if (vault.passkey) {
     await saveGlobalPasskey(vault.passkey);
   }
-  await set(vaultKeyFor(activePubkey), vault);
+  // IndexedDB via idb-keyval uses structured clone; serialize BigInt note values for safety.
+  const stored = serializeVault(vault);
+  await set(vaultKeyFor(activePubkey), stored);
 }
 
 export async function saveNotes(notes: Note[], activePubkey: string): Promise<void> {
@@ -193,7 +200,7 @@ export async function deriveAndAllocateNoteSecrets(activePubkey: string): Promis
 }> {
   const vault = await loadVault(activePubkey);
   if (!hasPasskey(vault)) {
-    throw new Error("Register a passkey first (Notes → Create passkey)");
+    throw new Error("Unlock passkey first");
   }
 
   const rootSeed = usePasskeyStore.getState().requireSeed();

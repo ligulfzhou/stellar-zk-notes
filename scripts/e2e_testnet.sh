@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# End-to-end testnet integration test (Phase C: join / send / exit).
+# End-to-end testnet integration test (join → exit).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"

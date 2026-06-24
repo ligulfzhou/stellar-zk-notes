@@ -1,27 +1,20 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import {
-  eventToActivityLabel,
-  scanIncomingEncryptedNotes,
-} from "@/lib/incoming-scanner";
 import { fetchVaultChainState } from "@/lib/vault-events-client";
+import { eventToActivityLabel } from "@/lib/vault-events";
 import { fetchPublicXlmBalance } from "@/lib/account-balance";
 import { POOLS } from "@/lib/pool-config";
 import { PrivacyBadge } from "@/components/PrivacyBadge";
-import { loadVault } from "@/lib/note-store";
-import { persistFullVault, useWalletStore } from "@/store/useWalletStore";
-import { usePasskeyStore } from "@/store/usePasskeyStore";
+import { useWalletStore } from "@/store/useWalletStore";
 
 export function DashboardPanel() {
-  const { publicKey, notes, poolChainCommitments, shieldedBalance, refreshNotes } =
+  const { publicKey, notes, poolChainCommitments, shieldedBalance } =
     useWalletStore();
-  const { unlocked, unlock, rootSeed } = usePasskeyStore();
   const [chainLeafCount, setChainLeafCount] = useState<number | null>(null);
   const [poolLeafCounts, setPoolLeafCounts] = useState<Array<number | null>>([]);
   const [publicBalance, setPublicBalance] = useState<string | null>(null);
   const [activity, setActivity] = useState<string[]>([]);
-  const [syncStatus, setSyncStatus] = useState<string | null>(null);
 
   const unspent = notes.filter((n) => n.status === "unspent").length;
   const pool0Count = poolChainCommitments[0]?.length ?? 0;
@@ -57,39 +50,6 @@ export function DashboardPanel() {
     })();
   }, [publicKey, notes.length, pool0Count]);
 
-  async function handleSync() {
-    if (!publicKey) return;
-    setSyncStatus("Syncing…");
-    try {
-      let seed = rootSeed;
-      if (!seed) {
-        try {
-          seed = await unlock();
-        } catch {
-          setSyncStatus("Unlock passkey first");
-          return;
-        }
-      }
-      const vault = await loadVault(publicKey);
-      const incoming = await scanIncomingEncryptedNotes({
-        ownerPubkey: publicKey,
-        rootSeed: seed,
-        vault,
-      });
-      await persistFullVault({
-        ...vault,
-        notes: incoming.notes,
-        poolChainCommitments: incoming.poolChainCommitments,
-      });
-      await refreshNotes();
-      setSyncStatus(
-        `Synced: ${incoming.imported} encrypted note(s), pool-0 ${incoming.poolChainCommitments[0]?.length ?? 0} commitments`
-      );
-    } catch (err) {
-      setSyncStatus(err instanceof Error ? err.message : "Sync failed");
-    }
-  }
-
   return (
     <section className="grid gap-4 md:grid-cols-3">
       <Card
@@ -107,7 +67,7 @@ export function DashboardPanel() {
           />
         </div>
         <p className="mt-3 text-xs text-zinc-500">
-          Shielded receive via zk1 — no chain registration needed.
+          Larger anonymity set → stronger unlinkability on exit.
         </p>
       </div>
       <Card
@@ -130,31 +90,27 @@ export function DashboardPanel() {
             ))}
           </ul>
         )}
-        <button
-          type="button"
-          onClick={() => void handleSync()}
-          disabled={!publicKey}
-          className="mt-4 rounded-lg border border-sky-500/30 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-500/10 disabled:opacity-50"
-        >
-          Scan encrypted incoming
-        </button>
-        {syncStatus ? (
-          <p className="mt-2 text-xs text-emerald-300">{syncStatus}</p>
-        ) : null}
       </Panel>
       <Panel title="Limits">
         <ul className="space-y-2 text-sm text-zinc-400">
-          <li>Merkle tree height 16 (~65k commitments max).</li>
-          <li>Up to 4 inputs and 4 outputs per transaction (change supported).</li>
-          <li>Native XLM only; proofs run locally when ZK real.</li>
+          <li>Fixed pools: 1 / 10 / 100 XLM (Tornado-style denominations).</li>
+          <li>Merkle tree height 16 (~65k commitments per pool).</li>
+          <li>Native XLM only; ZK proofs run locally when Real ZK is enabled.</li>
         </ul>
       </Panel>
       <Panel title="How it works">
         <ol className="list-decimal space-y-2 pl-5 text-sm text-zinc-300">
-          <li>Join pool → private commitment on-chain (fixed 1/10/100 XLM denomination).</li>
-          <li>Send to zk1… or pasted X25519 key → ECDH-encrypted note on-chain.</li>
-          <li>Exit → ZK proof + relayer pays recipient off-chain of vault events.</li>
+          <li>Deposit → commitment enters the pool (no note secrets on-chain).</li>
+          <li>Wait for anonymity set to grow (see privacy badge).</li>
+          <li>
+            Exit → browser ZK proof + relayer submits; recipient G address can
+            differ from deposit (unlinkability).
+          </li>
         </ol>
+        <p className="mt-3 text-xs text-zinc-500">
+          Recover deposits on a new browser: Notes → Unlock passkey → Rescan from
+          chain.
+        </p>
       </Panel>
     </section>
   );

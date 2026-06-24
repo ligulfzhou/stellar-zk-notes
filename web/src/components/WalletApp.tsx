@@ -5,7 +5,6 @@ import { ConnectButton } from "@/components/ConnectButton";
 import { DashboardPanel } from "@/components/DashboardPanel";
 import { JoinPanel } from "@/components/JoinPanel";
 import { NotesPanel } from "@/components/NotesPanel";
-import { SendPanel } from "@/components/SendPanel";
 import { ExitPanel } from "@/components/ExitPanel";
 import { PasskeyUnlockBanner } from "@/components/PasskeyUnlockBanner";
 import { DevPrivacyWarning } from "@/components/DevPrivacyWarning";
@@ -15,8 +14,7 @@ import { initWalletsKit } from "@/lib/wallet";
 
 const tabs = [
   { id: "dashboard", label: "Dashboard" },
-  { id: "join", label: "Join pool" },
-  { id: "send", label: "Send" },
+  { id: "join", label: "Deposit" },
   { id: "exit", label: "Exit" },
   { id: "notes", label: "Notes" },
 ] as const;
@@ -29,6 +27,12 @@ export function WalletApp() {
     void hydrate();
   }, [hydrate]);
 
+  useEffect(() => {
+    if ((activeTab as string) === "send") {
+      setTab("dashboard");
+    }
+  }, [activeTab, setTab]);
+
   return (
     <div className="min-h-screen bg-[#0b0f1a] text-zinc-100">
       <header className="border-b border-white/10 bg-[#0f1524]/80 backdrop-blur">
@@ -37,7 +41,7 @@ export function WalletApp() {
             <p className="text-xs uppercase tracking-[0.2em] text-violet-300">
               Stellar Hacks ZK
             </p>
-            <h1 className="text-xl font-semibold">zk-notes</h1>
+            <h1 className="text-xl font-semibold">zk-tornado</h1>
           </div>
           <div className="flex items-center gap-3">
             <ZkModeBadge />
@@ -75,7 +79,6 @@ export function WalletApp() {
 
         {activeTab === "dashboard" && <DashboardPanel />}
         {activeTab === "join" && <JoinPanel />}
-        {activeTab === "send" && <SendPanel />}
         {activeTab === "exit" && <ExitPanel />}
         {activeTab === "notes" && <NotesPanel />}
       </main>

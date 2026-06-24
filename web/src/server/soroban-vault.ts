@@ -149,30 +149,6 @@ export async function getVaultCommitmentAt(
   return "0x" + Buffer.from(bytes).toString("hex").padStart(64, "0");
 }
 
-export async function getVaultShieldedKey(
-  sourcePublicKey: string,
-  ownerPublicKey: string
-): Promise<string | null> {
-  const sim = await simulateVaultCall(sourcePublicKey, (contract, source) =>
-    new TransactionBuilder(source, {
-      fee: "100",
-      networkPassphrase: networkPassphrase(),
-    }).addOperation(
-      contract.call(
-        "get_shielded_key",
-        new Address(ownerPublicKey).toScVal()
-      )
-    )
-  );
-  if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) {
-    return null;
-  }
-  const native = scValToNative(sim.result.retval);
-  if (!native) return null;
-  const bytes = native as Buffer;
-  return "0x" + Buffer.from(bytes).toString("hex").padStart(64, "0");
-}
-
 export type VaultTreeState = {
   filled: string[];
   zeros: string[];

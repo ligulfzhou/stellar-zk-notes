@@ -11,6 +11,4 @@ pub enum DataKey {
     PoolTree(u32),
     PoolLeafCommitment(u32, u32),
     MinPoolSize,
-    /// G… account → X25519 receive public key (32 bytes).
-    ShieldedKey(Address),
 }

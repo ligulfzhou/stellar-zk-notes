@@ -4,23 +4,23 @@
  *
  * Usage:
  *   STELLAR_SOURCE=admin ./scripts/e2e_testnet.sh
- *   ./scripts/e2e_testnet.sh --flow all
+ *   ./scripts/e2e_testnet.sh --flow phase-c
  */
 import { execFileSync } from "node:child_process";
-import { deriveNoteSecretsFromSeed, deriveShieldedReceiveKeysFromSeed, deriveDepositSecretFromSeed } from "../../web/src/lib/root-seed.ts";
-import { encryptNoteForRecipient } from "../../web/src/lib/ecdh-delivery.ts";
+import {
+  deriveDepositSecretFromSeed,
+  deriveNoteSecretsFromSeed,
+} from "../../web/src/lib/root-seed.ts";
 import { POOLS, MIN_POOL_SIZE_TESTNET } from "../../web/src/lib/pool-config.ts";
 import { config, env, requireVaultId } from "./config.ts";
 import { e2ePartySeed, e2eRootSeed } from "./crypto.ts";
-import { encodePublicInputs, randomFieldDecimal } from "./field.ts";
-import { buildNoteSecrets, proveSpend } from "./prove.ts";
+import { encodePublicInputs } from "./field.ts";
+import { buildNoteSecrets, proveExit } from "./prove.ts";
 import {
   cliDeposit,
   cliLeafCount,
   cliMerkleRoot,
   cliPublicKey,
-  cliRegisterShieldedKey,
-  cliShieldedTransfer,
   cliWithdraw,
   proofToHex,
   publicInputsToHex,
@@ -29,16 +29,13 @@ import {
   deposit,
   exitPool,
   getVaultLeafCount,
-  getVaultMerkleRoot,
   joinPool,
-  registerShieldedKey,
-  shieldedTransfer,
   signerFromSecret,
   waitForTx,
   withdraw,
 } from "./stellar.ts";
 
-type Flow = "deposit" | "withdraw" | "send" | "all" | "alice-bob" | "phase-c";
+type Flow = "deposit" | "exit" | "all" | "phase-c" | "withdraw";
 
 type Backend = {
   mode: "sdk" | "cli";
@@ -142,104 +139,57 @@ async function backendDeposit(
   });
 }
 
-async function backendLeafCount(backend: Backend): Promise<number> {
+async function backendLeafCount(backend: Backend, poolId = 0): Promise<number> {
   if (backend.mode === "sdk" && backend.signer) {
-    return getVaultLeafCount(backend.signer.publicKey);
+    return getVaultLeafCount(backend.signer.publicKey, poolId);
   }
   return cliLeafCount(backend.cliSource!);
 }
 
 async function backendMerkleRoot(backend: Backend): Promise<string> {
   if (backend.mode === "sdk" && backend.signer) {
-    return getVaultMerkleRoot(backend.signer.publicKey);
+    return getVaultLeafCount(backend.signer.publicKey).then(() =>
+      cliMerkleRoot(backend.cliSource ?? backend.publicKey)
+    );
   }
   return cliMerkleRoot(backend.cliSource!);
 }
 
-async function backendWithdraw(
+async function backendExit(
   backend: Backend,
   params: {
-    amount: bigint;
-    nullifierHex: string;
+    poolId: number;
+    recipient: string;
+    relayer: string;
+    relayerFeeStroops: number;
+    nullifierHexes: string[];
     merkleRootHex: string;
     publicInputs: Uint8Array;
     proofBytes: Uint8Array;
   }
 ) {
   if (backend.mode === "sdk" && backend.signer) {
-    return withdraw({
+    return exitPool({
       signer: backend.signer,
-      recipient: backend.publicKey,
-      amountStroops: params.amount,
-      nullifierHex: params.nullifierHex,
+      poolId: params.poolId,
+      recipient: params.recipient,
+      relayer: params.relayer,
+      relayerFeeStroops: params.relayerFeeStroops,
+      nullifierHexes: params.nullifierHexes,
       merkleRootHex: params.merkleRootHex,
       publicInputs: params.publicInputs,
       proofBytes: params.proofBytes,
     });
   }
+  const pool = POOLS[params.poolId] ?? POOLS[0]!;
   return cliWithdraw({
     source: backend.cliSource!,
-    recipient: backend.publicKey,
-    amountStroops: params.amount,
-    nullifierHex: params.nullifierHex,
+    recipient: params.recipient,
+    amountStroops: pool.stroops,
+    nullifierHex: params.nullifierHexes[0]!,
     merkleRootHex: params.merkleRootHex,
     publicInputsHex: publicInputsToHex(params.publicInputs),
     proofHex: proofToHex(params.proofBytes),
-  });
-}
-
-async function backendRegisterShieldedKey(
-  backend: Backend,
-  receivePubkeyBytes: Uint8Array
-) {
-  const hex =
-    "0x" + Buffer.from(receivePubkeyBytes).toString("hex").padStart(64, "0");
-  if (backend.mode === "sdk" && backend.signer) {
-    return registerShieldedKey({
-      signer: backend.signer,
-      receivePubkeyBytes,
-    });
-  }
-  return cliRegisterShieldedKey({
-    source: backend.cliSource!,
-    owner: backend.publicKey,
-    receivePubkeyHex: hex,
-  });
-}
-
-async function backendSend(
-  backend: Backend,
-  params: {
-    poolId?: number;
-    nullifierHexes: string[];
-    newCommitmentHexes: string[];
-    merkleRootHex: string;
-    publicInputs: Uint8Array;
-    proofBytes: Uint8Array;
-    epkBytes: Uint8Array[];
-    encryptedNoteBytes: Uint8Array[];
-  }
-) {
-  if (backend.mode === "sdk" && backend.signer) {
-    return shieldedTransfer({
-      signer: backend.signer,
-      poolId: params.poolId,
-      ...params,
-    });
-  }
-  return cliShieldedTransfer({
-    source: backend.cliSource!,
-    nullifierHexes: params.nullifierHexes,
-    newCommitmentHexes: params.newCommitmentHexes,
-    merkleRootHex: params.merkleRootHex,
-    publicInputsHex: publicInputsToHex(params.publicInputs),
-    proofHex: proofToHex(params.proofBytes),
-    epkHexes: params.epkBytes.map(
-      (b) => "0x" + Buffer.from(b).toString("hex").padStart(64, "0")
-    ),
-    encryptedNoteHexes: params.encryptedNoteBytes.map((b) =>
-      Buffer.from(b).toString("hex")
-    ),
   });
 }
 
@@ -287,6 +237,93 @@ async function runJoin(
   throw new Error("phase-c join requires SDK signer (STELLAR_SOURCE with secret)");
 }
 
+async function seedPoolToMinSize(
+  backend: Backend,
+  poolId: number,
+  baseDerivationIndex: number,
+  partySeed: Uint8Array
+) {
+  let leafCount = await getVaultLeafCount(backend.publicKey, poolId).catch(() => 0);
+  const joinNotes: Awaited<ReturnType<typeof runJoin>>[] = [];
+
+  for (let i = 0; i < Math.max(MIN_POOL_SIZE_TESTNET - leafCount, 1); i++) {
+    joinNotes.push(
+      await runJoin(backend, poolId, baseDerivationIndex + i, partySeed)
+    );
+    leafCount = await getVaultLeafCount(backend.publicKey, poolId);
+  }
+
+  while (leafCount < MIN_POOL_SIZE_TESTNET) {
+    joinNotes.push(
+      await runJoin(
+        backend,
+        poolId,
+        baseDerivationIndex + joinNotes.length + 10,
+        partySeed
+      )
+    );
+    leafCount = await getVaultLeafCount(backend.publicKey, poolId);
+  }
+
+  ok("pool leaf count", String(leafCount));
+  return joinNotes;
+}
+
+async function runExitFromNote(
+  backend: Backend,
+  noteCtx: {
+    note: Awaited<ReturnType<typeof buildNoteSecrets>>;
+    leafIndex: number;
+    amount: bigint;
+    poolId: number;
+    secret: string;
+    nullifierSecret: string;
+    depositSecret: Uint8Array;
+  },
+  params: { recipient: string; relayer: string; relayerFeeStroops: number }
+) {
+  log("Prove exit");
+  const prove = await proveExit({
+    poolId: noteCtx.poolId,
+    value: noteCtx.amount.toString(),
+    secret: noteCtx.secret,
+    nullifierSecret: noteCtx.nullifierSecret,
+    depositSecret: noteCtx.depositSecret,
+    leafIndex: noteCtx.leafIndex,
+    commitmentHex: noteCtx.note.commitmentHex,
+    reader: backend.publicKey,
+    relayerFeeStroops: String(params.relayerFeeStroops),
+  });
+  ok("merkle root", prove.merkleRoot);
+
+  const pool = POOLS[noteCtx.poolId] ?? POOLS[0]!;
+  const publicInputs = encodePublicInputs({
+    poolId: noteCtx.poolId,
+    merkleRootHex: prove.merkleRoot,
+    nullifierHexes: prove.nullifierHexes,
+    newCommitmentHexes: ["0x0", "0x0", "0x0", "0x0"],
+    publicAmount: pool.stroops.toString(),
+    relayerFeeStroops: String(params.relayerFeeStroops),
+  });
+
+  log("Exit pool", `→ ${params.recipient.slice(0, 12)}…`);
+  const txHash = await backendExit(backend, {
+    poolId: noteCtx.poolId,
+    recipient: params.recipient,
+    relayer: params.relayer,
+    relayerFeeStroops: params.relayerFeeStroops,
+    nullifierHexes: prove.nullifierHexes,
+    merkleRootHex: prove.merkleRoot,
+    publicInputs,
+    proofBytes: prove.proofBytes,
+  });
+  ok("exit tx", txHash);
+  if (backend.mode === "sdk") {
+    await waitForTx(txHash).catch(() => undefined);
+  }
+  return txHash;
+}
+
 async function runPhaseC(
   alice: Backend,
   bob: Backend,
@@ -294,141 +331,21 @@ async function runPhaseC(
   baseDerivationIndex: number
 ) {
   const aliceSeed = e2ePartySeed("alice");
-  const bobSeed = e2ePartySeed("bob");
-  const bobReceivePubkey = deriveShieldedReceiveKeysFromSeed(bobSeed).publicKey;
-  const pool = POOLS[poolId] ?? POOLS[0]!;
-
-  let leafCount = await getVaultLeafCount(alice.publicKey, poolId).catch(() => 0);
-  const joinsNeeded = Math.max(0, MIN_POOL_SIZE_TESTNET - leafCount);
-  const joinNotes: Awaited<ReturnType<typeof runJoin>>[] = [];
-
-  for (let i = 0; i < Math.max(joinsNeeded, 1); i++) {
-    const ctx = await runJoin(
-      alice,
-      poolId,
-      baseDerivationIndex + i,
-      aliceSeed
-    );
-    joinNotes.push(ctx);
-    leafCount = await getVaultLeafCount(alice.publicKey, poolId);
-  }
-
-  while (leafCount < MIN_POOL_SIZE_TESTNET) {
-    const ctx = await runJoin(
-      alice,
-      poolId,
-      baseDerivationIndex + joinNotes.length + 10,
-      aliceSeed
-    );
-    joinNotes.push(ctx);
-    leafCount = await getVaultLeafCount(alice.publicKey, poolId);
-  }
-  ok("pool leaf count", String(leafCount));
-
-  const spendNote = joinNotes[0]!;
-  const newSecret = randomFieldDecimal();
-  const newNullifierSecret = randomFieldDecimal();
-  const newDepositSecret = deriveDepositSecretFromSeed(bobSeed, 99);
-
-  log("Alice proves shielded send → Bob (zk1, no on-chain register)");
-  const prove = await proveSpend({
-    mode: "shielded_send",
+  const joinNotes = await seedPoolToMinSize(
+    alice,
     poolId,
-    value: spendNote.amount.toString(),
-    secret: spendNote.secret,
-    nullifierSecret: spendNote.nullifierSecret,
-    depositSecret: spendNote.depositSecret,
-    leafIndex: spendNote.leafIndex,
-    commitmentHex: spendNote.note.commitmentHex,
-    reader: alice.publicKey,
-    newSecret,
-    newNullifierSecret,
-    newDepositSecret,
-  });
-  ok("new commitment", prove.newCommitmentHex);
-
-  const leafBase = await getVaultLeafCount(alice.publicKey, poolId);
-  const enc = encryptNoteForRecipient(bobReceivePubkey, {
-    value: spendNote.amount.toString(),
-    secret: newSecret,
-    nullifierSecret: newNullifierSecret,
-    commitment: prove.newCommitmentHex,
-    leafIndex: leafBase,
-  });
-
-  const publicInputs = encodePublicInputs({
-    poolId,
-    merkleRootHex: prove.merkleRoot,
-    nullifierHexes: prove.nullifierHexes,
-    newCommitmentHexes: prove.newCommitmentHexes,
-    publicAmount: "0",
-  });
-
-  log("Alice submits shielded transfer");
-  if (!alice.signer) throw new Error("SDK signer required");
-  const sendTx = await shieldedTransfer({
-    signer: alice.signer,
-    poolId,
-    nullifierHexes: prove.nullifierHexes,
-    newCommitmentHexes: prove.newCommitmentHexes,
-    merkleRootHex: prove.merkleRoot,
-    publicInputs,
-    proofBytes: prove.proofBytes,
-    epkBytes: [enc.epk],
-    encryptedNoteBytes: [enc.encrypted],
-  });
-  ok("send tx", sendTx);
-  await waitForTx(sendTx).catch(() => undefined);
-
-  const bobLeafIndex = (await getVaultLeafCount(bob.publicKey, poolId)) - 1;
-  const bobNote = await buildNoteSecrets(
-    poolId,
-    spendNote.amount.toString(),
-    newSecret,
-    newNullifierSecret,
-    newDepositSecret
+    baseDerivationIndex,
+    aliceSeed
   );
 
+  const spendNote = joinNotes[0]!;
   const relayerFeeStroops = 100_000;
 
-  log("Bob proves exit");
-  const bobExit = await proveSpend({
-    mode: "exit",
-    poolId,
-    value: spendNote.amount.toString(),
-    secret: newSecret,
-    nullifierSecret: newNullifierSecret,
-    depositSecret: newDepositSecret,
-    leafIndex: bobLeafIndex,
-    commitmentHex: bobNote.commitmentHex,
-    reader: bob.publicKey,
-    relayerFeeStroops: String(relayerFeeStroops),
-  });
-
-  const exitInputs = encodePublicInputs({
-    poolId,
-    merkleRootHex: bobExit.merkleRoot,
-    nullifierHexes: bobExit.nullifierHexes,
-    newCommitmentHexes: ["0x0", "0x0", "0x0", "0x0"],
-    publicAmount: pool.stroops.toString(),
-    relayerFeeStroops: String(relayerFeeStroops),
-  });
-
-  log("Bob submits exit_pool");
-  if (!bob.signer) throw new Error("SDK signer required");
-  const exitTx = await exitPool({
-    signer: bob.signer,
-    poolId,
+  await runExitFromNote(alice, spendNote, {
     recipient: bob.publicKey,
     relayer: alice.publicKey,
     relayerFeeStroops,
-    nullifierHexes: bobExit.nullifierHexes,
-    merkleRootHex: bobExit.merkleRoot,
-    publicInputs: exitInputs,
-    proofBytes: bobExit.proofBytes,
   });
-  ok("exit tx", exitTx);
-  await waitForTx(exitTx).catch(() => undefined);
 
   log("Privacy audit");
   execFileSync(
@@ -468,230 +385,16 @@ async function runDeposit(
     await waitForTx(txHash).catch(() => undefined);
   }
 
-  return { note, leafIndex, amount, derivationIndex, secret, nullifierSecret };
-}
-
-async function runWithdraw(
-  backend: Backend,
-  noteCtx: Awaited<ReturnType<typeof runDeposit>>
-) {
-  log("Prove spend (withdraw)");
-  const prove = await proveSpend({
-    mode: "exit",
-    poolId: 0,
-    value: noteCtx.amount.toString(),
-    secret: noteCtx.secret,
-    nullifierSecret: noteCtx.nullifierSecret,
-    depositSecret: new Uint8Array(32),
-    leafIndex: noteCtx.leafIndex,
-    commitmentHex: noteCtx.note.commitmentHex,
-    reader: backend.publicKey,
-    relayerFeeStroops: "0",
-  });
-  ok("merkle root", prove.merkleRoot);
-
-  const publicInputs = encodePublicInputs({
-    poolId: 0,
-    merkleRootHex: prove.merkleRoot,
-    nullifierHexes: prove.nullifierHexes,
-    newCommitmentHexes: ["0x0", "0x0", "0x0", "0x0"],
-    publicAmount: prove.publicInputs.public_amount,
-  });
-
-  log("Withdraw", `→ ${backend.publicKey.slice(0, 12)}…`);
-  const txHash = await backendWithdraw(backend, {
-    amount: noteCtx.amount,
-    nullifierHex: prove.nullifierHex,
-    merkleRootHex: prove.merkleRoot,
-    publicInputs,
-    proofBytes: prove.proofBytes,
-  });
-  ok("withdraw tx", txHash);
-  return txHash;
-}
-
-async function runSend(
-  backend: Backend,
-  noteCtx: Awaited<ReturnType<typeof runDeposit>>
-) {
-  const newSecret = randomFieldDecimal();
-  const newNullifierSecret = randomFieldDecimal();
-
-  log("Prove spend (shielded send)");
-  const prove = await proveSpend({
-    mode: "shielded_send",
-    poolId: 0,
-    value: noteCtx.amount.toString(),
-    secret: noteCtx.secret,
-    nullifierSecret: noteCtx.nullifierSecret,
-    depositSecret: new Uint8Array(32),
-    leafIndex: noteCtx.leafIndex,
-    commitmentHex: noteCtx.note.commitmentHex,
-    reader: backend.publicKey,
-    newSecret,
-    newNullifierSecret,
-    newDepositSecret: new Uint8Array(32),
-  });
-  ok("new commitment", prove.newCommitmentHex);
-
-  const leafCount = await backendLeafCount(backend);
-  const newLeafIndex = leafCount;
-  const receivePubkey = deriveShieldedReceiveKeysFromSeed(e2eRootSeed()).publicKey;
-  const enc = encryptNoteForRecipient(receivePubkey, {
-    value: noteCtx.amount.toString(),
-    secret: newSecret,
-    nullifierSecret: newNullifierSecret,
-    commitment: prove.newCommitmentHex,
-    leafIndex: newLeafIndex,
-  });
-
-  const publicInputs = encodePublicInputs({
-    poolId: 0,
-    merkleRootHex: prove.merkleRoot,
-    nullifierHexes: prove.nullifierHexes,
-    newCommitmentHexes: prove.newCommitmentHexes,
-    publicAmount: "0",
-  });
-
-  log("Shielded transfer", "action bundle");
-  const txHash = await backendSend(backend, {
-    nullifierHexes: prove.nullifierHexes,
-    newCommitmentHexes: prove.newCommitmentHexes,
-    merkleRootHex: prove.merkleRoot,
-    publicInputs,
-    proofBytes: prove.proofBytes,
-    epkBytes: [enc.epk],
-    encryptedNoteBytes: [enc.encrypted],
-  });
-  ok("send tx", txHash);
-
-  const leafCountAfter = await backendLeafCount(backend);
   return {
-    txHash,
-    newLeafIndex: leafCountAfter - 1,
-    newSecret,
-    newNullifierSecret,
-    amount: noteCtx.amount,
-  };
-}
-
-async function runAliceBob(
-  alice: Backend,
-  bob: Backend,
-  derivationIndex: number,
-  amount: bigint
-) {
-  const bobSeed = e2ePartySeed("bob");
-  const bobReceivePubkey = deriveShieldedReceiveKeysFromSeed(bobSeed).publicKey;
-
-  log("Bob registers shielded key", bob.publicKey.slice(0, 12) + "…");
-  const regTx = await backendRegisterShieldedKey(bob, bobReceivePubkey);
-  ok("register tx", regTx);
-  if (bob.mode === "sdk") {
-    await waitForTx(regTx).catch(() => undefined);
-  }
-
-  const aliceNote = await runDeposit(
-    alice,
-    derivationIndex,
+    note,
+    leafIndex,
     amount,
-    e2ePartySeed("alice")
-  );
-
-  const newSecret = randomFieldDecimal();
-  const newNullifierSecret = randomFieldDecimal();
-
-  log("Alice proves shielded send → Bob");
-  const prove = await proveSpend({
-    mode: "shielded_send",
     poolId: 0,
-    value: aliceNote.amount.toString(),
-    secret: aliceNote.secret,
-    nullifierSecret: aliceNote.nullifierSecret,
+    derivationIndex,
+    secret,
+    nullifierSecret,
     depositSecret: new Uint8Array(32),
-    leafIndex: aliceNote.leafIndex,
-    commitmentHex: aliceNote.note.commitmentHex,
-    reader: alice.publicKey,
-    newSecret,
-    newNullifierSecret,
-    newDepositSecret: new Uint8Array(32),
-  });
-  ok("new commitment", prove.newCommitmentHex);
-
-  const leafCount = await backendLeafCount(alice);
-  const newLeafIndex = leafCount;
-  const enc = encryptNoteForRecipient(bobReceivePubkey, {
-    value: aliceNote.amount.toString(),
-    secret: newSecret,
-    nullifierSecret: newNullifierSecret,
-    commitment: prove.newCommitmentHex,
-    leafIndex: newLeafIndex,
-  });
-
-  const publicInputs = encodePublicInputs({
-    poolId: 0,
-    merkleRootHex: prove.merkleRoot,
-    nullifierHexes: prove.nullifierHexes,
-    newCommitmentHexes: prove.newCommitmentHexes,
-    publicAmount: "0",
-  });
-
-  log("Alice submits shielded transfer");
-  const sendTx = await backendSend(alice, {
-    nullifierHexes: prove.nullifierHexes,
-    newCommitmentHexes: prove.newCommitmentHexes,
-    merkleRootHex: prove.merkleRoot,
-    publicInputs,
-    proofBytes: prove.proofBytes,
-    epkBytes: [enc.epk],
-    encryptedNoteBytes: [enc.encrypted],
-  });
-  ok("send tx", sendTx);
-  if (alice.mode === "sdk") {
-    await waitForTx(sendTx).catch(() => undefined);
-  }
-
-  const leafCountAfter = await backendLeafCount(bob);
-  const bobLeafIndex = leafCountAfter - 1;
-
-  log("Bob proves withdraw");
-  const bobNote = await buildNoteSecrets(
-    0,
-    aliceNote.amount.toString(),
-    newSecret,
-    newNullifierSecret,
-    new Uint8Array(32)
-  );
-  const bobWithdraw = await proveSpend({
-    mode: "exit",
-    poolId: 0,
-    value: aliceNote.amount.toString(),
-    secret: newSecret,
-    nullifierSecret: newNullifierSecret,
-    depositSecret: new Uint8Array(32),
-    leafIndex: bobLeafIndex,
-    commitmentHex: bobNote.commitmentHex,
-    reader: bob.publicKey,
-    relayerFeeStroops: "0",
-  });
-
-  const withdrawInputs = encodePublicInputs({
-    poolId: 0,
-    merkleRootHex: bobWithdraw.merkleRoot,
-    nullifierHexes: bobWithdraw.nullifierHexes,
-    newCommitmentHexes: ["0x0", "0x0", "0x0", "0x0"],
-    publicAmount: bobWithdraw.publicInputs.public_amount,
-  });
-
-  log("Bob withdraws", `→ ${bob.publicKey.slice(0, 12)}…`);
-  const withdrawTx = await backendWithdraw(bob, {
-    amount: aliceNote.amount,
-    nullifierHex: bobWithdraw.nullifierHex,
-    merkleRootHex: bobWithdraw.merkleRoot,
-    publicInputs: withdrawInputs,
-    proofBytes: bobWithdraw.proofBytes,
-  });
-  ok("withdraw tx", withdrawTx);
+  };
 }
 
 async function main() {
@@ -717,36 +420,13 @@ async function main() {
     console.log(`  alice: ${alice.publicKey}`);
     console.log(`  bob:   ${bob.publicKey}`);
     await runPhaseC(alice, bob, poolId, derivationIndex);
-    console.log("\n✅ Phase C flow OK (join → send → exit → audit)");
-    return;
-  }
-
-  if (flow === "alice-bob") {
-    const aliceSource = env("E2E_ALICE_SOURCE", "alice");
-    const bobSource = env("E2E_BOB_SOURCE", "bob");
-    log("Resolve signers", `${aliceSource} → ${bobSource}`);
-    const alice = await resolveBackendForSource(aliceSource);
-    const bob = await resolveBackendForSource(bobSource);
-    console.log(`  alice: ${alice.publicKey}`);
-    console.log(`  bob:   ${bob.publicKey}`);
-    await runAliceBob(alice, bob, derivationIndex, amount);
-    console.log("\n✅ Alice→Bob flow OK (deposit → send → withdraw)");
+    console.log("\n✅ Phase C flow OK (join → exit → audit)");
     return;
   }
 
   const backend = await resolveBackend();
   console.log(`  sign:    ${backend.mode}${backend.cliSource ? ` (${backend.cliSource})` : ""}`);
   log("Signer", backend.publicKey);
-
-  const receivePubkey = deriveShieldedReceiveKeysFromSeed(e2eRootSeed()).publicKey;
-  if (flow === "all" || flow === "send") {
-    log("Register shielded key", "for G… → zk1 lookup");
-    const regTx = await backendRegisterShieldedKey(backend, receivePubkey);
-    ok("register tx", regTx);
-    if (backend.mode === "sdk") {
-      await waitForTx(regTx).catch(() => undefined);
-    }
-  }
 
   const leafBefore = await backendLeafCount(backend).catch(() => 0);
   const rootBefore = await backendMerkleRoot(backend).catch(() => "n/a");
@@ -758,41 +438,24 @@ async function main() {
     return;
   }
 
-  if (flow === "withdraw") {
+  if (flow === "withdraw" || flow === "exit") {
     const noteCtx = await runDeposit(backend, derivationIndex, amount);
-    await runWithdraw(backend, noteCtx);
-    console.log("\n✅ Deposit + Withdraw OK");
+    await runExitFromNote(backend, noteCtx, {
+      recipient: backend.publicKey,
+      relayer: backend.publicKey,
+      relayerFeeStroops: 0,
+    });
+    console.log("\n✅ Deposit + Exit OK");
     return;
   }
 
-  if (flow === "send") {
-    const noteCtx = await runDeposit(backend, derivationIndex, amount);
-    await runSend(backend, noteCtx);
-    console.log("\n✅ Deposit + Shielded send OK");
-    return;
-  }
-
-  const noteA = await runDeposit(backend, derivationIndex, amount);
-  const sendResult = await runSend(backend, noteA);
-
-  const noteB = await buildNoteSecrets(
-    0,
-    sendResult.amount.toString(),
-    sendResult.newSecret,
-    sendResult.newNullifierSecret,
-    new Uint8Array(32)
-  );
-  const withdrawCtx = {
-    note: noteB,
-    leafIndex: sendResult.newLeafIndex,
-    amount: sendResult.amount,
-    derivationIndex,
-    secret: sendResult.newSecret,
-    nullifierSecret: sendResult.newNullifierSecret,
-  };
-  await runWithdraw(backend, withdrawCtx);
-
-  console.log("\n✅ Full flow OK (deposit → send → withdraw)");
+  const noteCtx = await runDeposit(backend, derivationIndex, amount);
+  await runExitFromNote(backend, noteCtx, {
+    recipient: backend.publicKey,
+    relayer: backend.publicKey,
+    relayerFeeStroops: 0,
+  });
+  console.log("\n✅ Full flow OK (deposit → exit)");
 }
 
 main().catch((err) => {

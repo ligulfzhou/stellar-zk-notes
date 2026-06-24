@@ -45,6 +45,17 @@ export type VaultChainEvent =
   | VaultShieldedSendEvent
   | VaultExitEvent;
 
+export function eventToActivityLabel(event: VaultChainEvent): string {
+  if (event.kind === "join") {
+    const label = poolById(event.poolId).label;
+    return `Deposit ${label} (leaf ${event.leafIndex})`;
+  }
+  if (event.kind === "exit") {
+    return `Exit pool ${event.poolId} (nullifier spent)`;
+  }
+  return `Legacy pool transfer (leaf ${event.leafIndex})`;
+}
+
 function rpcServer(): rpc.Server {
   return new rpc.Server(SOROBAN_RPC_URL, {
     allowHttp: STELLAR_NETWORK !== "mainnet",

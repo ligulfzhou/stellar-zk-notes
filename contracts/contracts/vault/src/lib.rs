@@ -33,25 +33,9 @@ pub struct JoinEvent {
 }
 
 #[contractevent]
-pub struct ShieldedSendEvent {
-    pub pool_id: u32,
-    pub nullifier: BytesN<32>,
-    pub new_commitment: BytesN<32>,
-    pub leaf_index: u32,
-    pub epk: BytesN<32>,
-    pub encrypted_note: Bytes,
-}
-
-#[contractevent]
 pub struct ExitEvent {
     pub pool_id: u32,
     pub nullifier: BytesN<32>,
-}
-
-#[contractevent]
-pub struct ShieldedKeyRegisteredEvent {
-    pub owner: Address,
-    pub receive_pubkey: BytesN<32>,
 }
 
 #[contract]
@@ -119,82 +103,6 @@ impl Vault {
             leaf_index,
         }
         .publish(&env);
-    }
-
-    /// Action-bundle shielded transfer scoped to a denomination pool.
-    pub fn shielded_transfer(
-        env: Env,
-        pool_id: u32,
-        nullifier0: BytesN<32>,
-        nullifier1: BytesN<32>,
-        nullifier2: BytesN<32>,
-        nullifier3: BytesN<32>,
-        new_commitment0: BytesN<32>,
-        new_commitment1: BytesN<32>,
-        new_commitment2: BytesN<32>,
-        new_commitment3: BytesN<32>,
-        merkle_root: BytesN<32>,
-        public_inputs: Bytes,
-        proof_bytes: Bytes,
-        epk0: BytesN<32>,
-        encrypted_note0: Bytes,
-        epk1: BytesN<32>,
-        encrypted_note1: Bytes,
-        epk2: BytesN<32>,
-        encrypted_note2: Bytes,
-        epk3: BytesN<32>,
-        encrypted_note3: Bytes,
-    ) {
-        let nullifiers = [
-            nullifier0.clone(),
-            nullifier1.clone(),
-            nullifier2.clone(),
-            nullifier3.clone(),
-        ];
-        let commitments = [
-            new_commitment0.clone(),
-            new_commitment1.clone(),
-            new_commitment2.clone(),
-            new_commitment3.clone(),
-        ];
-        let epks = [epk0, epk1, epk2, epk3];
-        let notes = [
-            encrypted_note0.clone(),
-            encrypted_note1.clone(),
-            encrypted_note2.clone(),
-            encrypted_note3.clone(),
-        ];
-
-        for (i, nc) in commitments.iter().enumerate() {
-            if !is_zero_bytes(nc) {
-                assert!(notes[i].len() > 0, "encrypted_note required for output");
-                assert!(notes[i].len() <= 512, "encrypted_note too large");
-            }
-        }
-
-        let leaf_indices = Self::apply_transfer(
-            &env,
-            pool_id,
-            &nullifiers,
-            &commitments,
-            merkle_root,
-            public_inputs,
-            proof_bytes,
-        );
-
-        for i in 0..MAX_ACTION_SLOTS {
-            if let Some(leaf_index) = leaf_indices[i] {
-                ShieldedSendEvent {
-                    pool_id,
-                    nullifier: nullifiers[i].clone(),
-                    new_commitment: commitments[i].clone(),
-                    leaf_index,
-                    epk: epks[i].clone(),
-                    encrypted_note: notes[i].clone(),
-                }
-                .publish(&env);
-            }
-        }
     }
 
     /// Exit pool: burn shielded note and atomically pay recipient (+ optional relayer fee).
@@ -280,24 +188,6 @@ impl Vault {
         assert!(level < TREE_HEIGHT, "level out of range");
         let tree = load_pool_tree(&env, pool_id);
         tree.zeros.get(level).unwrap()
-    }
-
-    pub fn register_shielded_key(env: Env, owner: Address, receive_pubkey: BytesN<32>) {
-        owner.require_auth();
-        env.storage()
-            .persistent()
-            .set(&DataKey::ShieldedKey(owner.clone()), &receive_pubkey);
-        ShieldedKeyRegisteredEvent {
-            owner,
-            receive_pubkey,
-        }
-        .publish(&env);
-    }
-
-    pub fn get_shielded_key(env: Env, owner: Address) -> Option<BytesN<32>> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::ShieldedKey(owner))
     }
 
     pub fn get_commitment_at(env: Env, pool_id: u32, leaf_index: u32) -> Option<BytesN<32>> {

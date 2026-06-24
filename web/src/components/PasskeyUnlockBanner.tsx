@@ -1,24 +1,19 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { getPasskeyConfig } from "@/lib/note-store";
-import { isPlatformAuthenticatorAvailable } from "@/lib/passkey";
+import { isPlatformAuthenticatorAvailable, passkeyOriginHint } from "@/lib/passkey";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
 
 export function PasskeyUnlockBanner() {
   const { unlocked, unlocking, unlock, error } = usePasskeyStore();
-  const [needsPasskey, setNeedsPasskey] = useState(false);
   const [platformOk, setPlatformOk] = useState<boolean | null>(null);
+  const originHint = passkeyOriginHint();
 
   useEffect(() => {
-    void (async () => {
-      const passkey = await getPasskeyConfig();
-      setNeedsPasskey(Boolean(passkey?.credentials.length));
-      setPlatformOk(await isPlatformAuthenticatorAvailable());
-    })();
-  }, [unlocked]);
+    void isPlatformAuthenticatorAvailable().then(setPlatformOk);
+  }, []);
 
-  if (!needsPasskey || unlocked) return null;
+  if (unlocked) return null;
 
   return (
     <div className="mb-6 rounded-xl border border-sky-500/30 bg-sky-500/10 px-4 py-3">
@@ -26,11 +21,15 @@ export function PasskeyUnlockBanner() {
         <div>
           <p className="text-sm font-medium text-sky-200">Passkey locked</p>
           <p className="text-xs text-zinc-400">
-            Unlock to join pool, send, exit, or scan incoming notes.
+            Unlock to deposit or exit. First unlock registers a device key
+            (Touch ID / Face ID) — note secrets are never stored on-chain.
             {platformOk === false
-              ? " No platform authenticator detected — use a browser with Touch ID / Face ID."
+              ? " No platform authenticator detected — use Safari 17+ or Chrome 118+."
               : null}
           </p>
+          {originHint ? (
+            <p className="mt-1 text-xs text-amber-300">{originHint}</p>
+          ) : null}
           {error ? <p className="mt-1 text-xs text-red-300">{error}</p> : null}
         </div>
         <button

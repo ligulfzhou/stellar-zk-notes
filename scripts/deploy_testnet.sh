@@ -108,7 +108,6 @@ Deployed on $NETWORK (ZK mode: $ZK_MODE):
 
 Web wallet — update web/.env.local:
   NEXT_PUBLIC_VAULT_CONTRACT_ID=$VAULT_ID
-  NEXT_PUBLIC_VAULT_LEGACY_SEND=false
   ZK_MOCK_PROOF=$([ "$REAL_ZK" == true ] && echo "false" || echo "true")
 
   cd web && npm run dev

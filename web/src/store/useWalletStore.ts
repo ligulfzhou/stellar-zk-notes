@@ -6,7 +6,7 @@ import { sumUnspentNotes, hasPasskey } from "@/lib/note";
 import { loadVault, saveVault } from "@/lib/note-store";
 import { connectWallet, getPublicKey } from "@/lib/wallet";
 
-type Tab = "dashboard" | "join" | "send" | "exit" | "notes";
+type Tab = "dashboard" | "join" | "exit" | "notes";
 
 interface WalletState {
   publicKey: string | null;

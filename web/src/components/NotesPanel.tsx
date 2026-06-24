@@ -3,16 +3,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { Note } from "@/lib/note";
 import { exportVaultJson, importVaultJson, loadVault } from "@/lib/note-store";
-import { hasPasskey } from "@/lib/note-types";
 import { rescanVaultFromChain } from "@/lib/rescan-vault";
 import { formatError } from "@/lib/format-error";
-import {
-  deriveShieldedReceiveKeysFromRoot,
-  encodeZk1Address,
-} from "@/lib/shielded-keys";
-import { isPlatformAuthenticatorAvailable } from "@/lib/passkey";
-import { registerShieldedKeyOnVault } from "@/lib/stellar";
-import { signTransactionXdr } from "@/lib/wallet";
+import { isPlatformAuthenticatorAvailable, passkeyOriginHint } from "@/lib/passkey";
 import { persistFullVault, useWalletStore } from "@/store/useWalletStore";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
 
@@ -29,7 +22,6 @@ export function NotesPanel() {
     unlocked,
     unlocking,
     unlock,
-    registerPrimary,
     registerRecovery,
     rootSeed,
   } = usePasskeyStore();
@@ -38,29 +30,16 @@ export function NotesPanel() {
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
-  const [showAdvanced, setShowAdvanced] = useState(false);
-  const [registering, setRegistering] = useState(false);
-  const [zk1Address, setZk1Address] = useState<string | null>(null);
-  const [passkeyReady, setPasskeyReady] = useState(false);
   const [platformOk, setPlatformOk] = useState(true);
+  const originHint = passkeyOriginHint();
 
   useEffect(() => {
     void (async () => {
       if (!publicKey) {
-        setPasskeyReady(false);
-        setZk1Address(null);
         return;
       }
-      const vault = await loadVault(publicKey);
-      setPasskeyReady(hasPasskey(vault));
+      await loadVault(publicKey);
       setPlatformOk(await isPlatformAuthenticatorAvailable());
-
-      if (unlocked && rootSeed) {
-        const keys = deriveShieldedReceiveKeysFromRoot(rootSeed);
-        setZk1Address(encodeZk1Address(keys.publicKey));
-      } else {
-        setZk1Address(null);
-      }
     })();
   }, [publicKey, unlocked, rootSeed, notes.length]);
 
@@ -75,37 +54,10 @@ export function NotesPanel() {
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement("a");
     anchor.href = url;
-    anchor.download = `zk-notes-vault-${Date.now()}.json`;
+    anchor.download = `zk-tornado-vault-${Date.now()}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
-    setStatus("Vault exported (no secrets)");
-  }
-
-  async function handleRegisterShieldedKey() {
-    setError(null);
-    setStatus(null);
-    if (!publicKey) {
-      setError("Connect wallet first");
-      return;
-    }
-    setRegistering(true);
-    try {
-      if (!unlocked) await unlock();
-      const seed = usePasskeyStore.getState().requireSeed();
-      const { publicKey: receivePubkey } = deriveShieldedReceiveKeysFromRoot(seed);
-      setStatus("Registering shielded key on-chain…");
-      const txHash = await registerShieldedKeyOnVault({
-        sourcePublicKey: publicKey,
-        receivePubkeyBytes: receivePubkey,
-        signTransaction: async (xdr) => signTransactionXdr(xdr, publicKey),
-      });
-      setStatus(`Shielded key registered. Tx: ${txHash.slice(0, 12)}…`);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Register failed");
-      setStatus(null);
-    } finally {
-      setRegistering(false);
-    }
+    setStatus("Vault exported (metadata only — secrets stay in passkey)");
   }
 
   async function handleImport(file: File) {
@@ -135,7 +87,7 @@ export function NotesPanel() {
       try {
         seed = await unlock();
       } catch {
-        setError("Unlock passkey first to rescan joins");
+        setError("Unlock passkey first to rescan deposits");
         return;
       }
     }
@@ -153,11 +105,11 @@ export function NotesPanel() {
       await persistFullVault(result.vault);
       await refreshNotes();
       setStatus(
-        `Rescan done: ${result.joinsMatched} join(s) recovered, ` +
+        `Rescan done: ${result.joinsMatched} deposit(s) recovered, ` +
           `pool-0 ${result.vault.poolChainCommitments[0]?.length ?? 0} commitments, ` +
           `${result.eventsParsed} events` +
           (result.joinsSkipped
-            ? ` (${result.joinsSkipped} join(s) unmatched)`
+            ? ` (${result.joinsSkipped} deposit(s) unmatched)`
             : "")
       );
     } catch (err) {
@@ -168,19 +120,14 @@ export function NotesPanel() {
     }
   }
 
-  async function handleCreatePasskey() {
+  async function handleUnlockPasskey() {
     setError(null);
     try {
-      await registerPrimary("Primary passkey");
-      setPasskeyReady(true);
-      const keys = deriveShieldedReceiveKeysFromRoot(
-        usePasskeyStore.getState().requireSeed()
-      );
-      setZk1Address(encodeZk1Address(keys.publicKey));
+      await unlock();
       await refreshNotes();
-      setStatus("Passkey created — shielded wallet ready");
+      setStatus("Passkey unlocked");
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Passkey setup failed");
+      setError(err instanceof Error ? err.message : "Passkey unlock failed");
     }
   }
 
@@ -195,104 +142,45 @@ export function NotesPanel() {
     }
   }
 
-  async function handleCopyZk1() {
-    if (!zk1Address) return;
-    await navigator.clipboard.writeText(zk1Address);
-    setStatus("zk1 address copied");
-  }
-
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
       <div className="mb-6 rounded-xl border border-sky-500/20 bg-sky-500/5 p-4">
         <h3 className="text-sm font-medium text-sky-200">Passkey wallet</h3>
         <p className="mt-1 text-xs text-zinc-400">
-          Root key lives in your authenticator (PRF). Unlock with biometrics to spend.
-          On a new device: same synced passkey, or use a recovery passkey.
+          Note secrets are derived from your device passkey (WebAuthn PRF). Unlock
+          with biometrics to deposit or exit. On a new device: same synced passkey,
+          or add a recovery passkey, then Rescan from chain.
         </p>
         <p className="mt-2 text-sm text-zinc-300">
-          Status:{" "}
-          {!passkeyReady
-            ? "not set — create before first join"
-            : unlocked
-              ? "🔓 unlocked"
-              : "🔒 locked"}
+          Status: {unlocked ? "🔓 unlocked" : "🔒 locked"}
         </p>
         {!platformOk ? (
           <p className="mt-1 text-xs text-amber-300">
             Platform authenticator not detected. Use Safari 17+ or Chrome 118+ on macOS/iOS.
           </p>
         ) : null}
-
-        {zk1Address ? (
-          <div className="mt-3 rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3">
-            <p className="text-xs text-emerald-200">Shielded receive address (zk1)</p>
-            <p className="mt-1 break-all font-mono text-xs text-zinc-200">{zk1Address}</p>
-            <button
-              type="button"
-              onClick={() => void handleCopyZk1()}
-              className="mt-2 rounded-lg border border-emerald-500/30 px-3 py-1 text-xs text-emerald-200 hover:bg-emerald-500/10"
-            >
-              Copy zk1
-            </button>
-            <p className="mt-2 text-xs text-zinc-400">
-              Share zk1 with senders — no on-chain registration needed.
-            </p>
-            <button
-              type="button"
-              onClick={() => setShowAdvanced((v) => !v)}
-              className="mt-2 text-xs text-zinc-500 underline decoration-zinc-600 underline-offset-2 hover:text-zinc-300"
-            >
-              {showAdvanced ? "Hide advanced" : "Advanced: on-chain register"}
-            </button>
-            {showAdvanced ? (
-              <div className="mt-2 rounded-lg border border-amber-500/30 bg-amber-500/5 p-3">
-                <p className="text-xs text-amber-200">
-                  Warning: registering your shielded key on-chain links your G…
-                  address to encryption metadata. Prefer sharing zk1 off-chain.
-                </p>
-                <button
-                  type="button"
-                  onClick={() => void handleRegisterShieldedKey()}
-                  disabled={registering || !passkeyReady}
-                  className="mt-2 rounded-lg border border-amber-500/40 px-3 py-1 text-xs text-amber-100 hover:bg-amber-500/10 disabled:opacity-50"
-                >
-                  {registering ? "Registering…" : "Register on-chain (legacy)"}
-                </button>
-              </div>
-            ) : null}
-          </div>
+        {originHint ? (
+          <p className="mt-1 text-xs text-amber-300">{originHint}</p>
         ) : null}
 
         <div className="mt-3 flex flex-wrap gap-2">
-          {!passkeyReady ? (
+          {!unlocked ? (
             <button
               type="button"
-              onClick={() => void handleCreatePasskey()}
+              onClick={() => void handleUnlockPasskey()}
               disabled={unlocking}
               className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500 disabled:opacity-50"
             >
-              Create passkey
+              {unlocking ? "Waiting…" : "Unlock passkey"}
             </button>
           ) : (
-            <>
-              {!unlocked ? (
-                <button
-                  type="button"
-                  onClick={() => void unlock()}
-                  disabled={unlocking}
-                  className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500 disabled:opacity-50"
-                >
-                  {unlocking ? "Waiting…" : "Unlock"}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => void handleAddRecovery()}
-                className="rounded-lg border border-sky-500/30 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-500/10"
-              >
-                Add recovery passkey
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={() => void handleAddRecovery()}
+              className="rounded-lg border border-sky-500/30 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-500/10"
+            >
+              Add recovery passkey
+            </button>
           )}
           <button
             type="button"
@@ -368,14 +256,14 @@ function NoteRow({
   const deriveLabel =
     note.derivationIndex !== undefined
       ? `passkey #${note.derivationIndex}`
-      : "received";
+      : "legacy";
 
   return (
     <li className="rounded-lg border border-white/10 bg-white/5 px-4 py-3 text-sm">
       <div className="flex flex-wrap justify-between gap-2">
         <span>{formatStroops(note.value)} XLM</span>
         <span className="text-zinc-400">
-          {note.status} · leaf {note.leafIndex} · {deriveLabel}
+          {note.status} · pool {note.poolId} · leaf {note.leafIndex} · {deriveLabel}
         </span>
       </div>
       <p className="mt-1 truncate font-mono text-xs text-zinc-500">{note.commitment}</p>

@@ -13,9 +13,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "zk-notes | UTXO Private Payments on Stellar",
+  title: "zk-tornado | Privacy Pools on Stellar",
   description:
-    "ZK-native UTXO note wallet for private deposits, shielded sends, and withdrawals on Stellar.",
+    "Tornado-style fixed-denomination privacy pools on Stellar — passkey wallet, browser ZK proofs, relayer-assisted exit.",
 };
 
 export default function RootLayout({
