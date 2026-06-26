@@ -107,6 +107,10 @@ See [architecture](docs/architecture.md) — **full system diagram** (join → p
 
 ## Demo video script (~2 min)
 
+Full shot list aligned with [DoraHacks submission requirements](https://dorahacks.io/hackathon/stellar-hacks-zk/detail): **[docs/demo-script-en.md](docs/demo-script-en.md)** (2–3 min voiceover, ZK + Stellar checklist, BUIDL copy-paste).
+
+Quick flow:
+
 1. **Connect** Freighter on testnet.
 2. **Unlock passkey** (Touch ID / Face ID) — first time registers device key.
 3. **Deposit** 10 XLM → commitment on-chain; secrets stay local.

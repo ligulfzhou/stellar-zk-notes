@@ -1,171 +1,238 @@
-# zk-tornado — Demo Video Script (DoraHacks submission)
+# zk-tornado — Demo Video Script
 
 **Hackathon:** [Stellar Hacks: Real-World ZK](https://dorahacks.io/hackathon/stellar-hacks-zk/detail)  
-**Target length:** **2–3 minutes** (required)  
-**Product:** Tornado-style privacy pools on Stellar / Soroban  
-**Live flow:** Connect → Passkey → Deposit → Exit (relayer or self)  
+**Length:** **2–3 minutes** (required)  
+**Format:** Screen recording + voiceover. You do **not** need to appear on camera. Production quality is **not** scored — clarity is.
+
+**Product:** Tornado-style privacy pools on Stellar Soroban — fixed 1 / 10 / 100 XLM pools, browser Noir/UltraHonk proofs, passkey wallet, relayer exit.
+
 **Testnet vault:** `CCSA45EVCX3JJDE5OIGJFGWAQPYWD65MMTQZKL66ZILZDMVAUXZXLV4H`
 
 ---
 
-## What judges need (from official requirements)
+## Map video → official submission requirements
 
-Your video should make these four points obvious — in any order, but all four should land:
+Organizers ask for three things. Your video should make each one obvious.
 
-| # | Requirement | How we satisfy it |
-|---|-------------|-------------------|
-| 1 | **Real-world problem** | Cross-border / public-ledger payments leak who paid whom; users need **unlinkability** without leaving Stellar |
-| 2 | **ZK is load-bearing** | Exit **requires** a Noir `pool_actions` proof; Soroban **UltraHonk verifier** rejects invalid spends — not a slide, not optional |
-| 3 | **Stellar integration** | Native XLM SAC, `join_pool` / `exit_pool` on **testnet Soroban**, Freighter signing, explorer links |
-| 4 | **Working demo** | Browser wallet deposits, generates proof locally, exit pays recipient on-chain |
+| Requirement | What to show / say in the video | Where in repo |
+|-------------|----------------------------------|---------------|
+| **1. Open-source repo** | End card or closing line: *“Full source on GitHub — README, architecture, honest limitations.”* | [README.md](../README.md), [architecture.md](architecture.md) |
+| **2. Short demo video** | Live walkthrough: connect → deposit → **wait for ZK proof** → exit → XLM received | This script |
+| **3. ZK + Stellar (load-bearing)** | Say explicitly: exit **fails** without a valid proof; Soroban **verifier contract** checks UltraHonk on testnet — not a slide, not optional | `circuits/pool_actions`, vault `exit_pool`, verifier `verify_proof` |
 
-You do **not** need to be on camera. Screen recording + voiceover is fine. Production quality is **not** scored — clarity is.
-
-**Also submit:** public GitHub repo + README (setup, honest limitations).
-
-**Deadline:** June 29, 2026, 12:00 PM PST.
+**What “load-bearing ZK” means for us:** You cannot withdraw from the pool unless the browser generates a Noir `pool_actions` proof and the Soroban verifier accepts it. Mock proofs are rejected on our deployed testnet verifier.
 
 ---
 
-## Before recording
+## Before you hit Record
 
-1. Freighter on **Testnet**, **15+ XLM** (deposit + fees + retakes)  
-2. `cd web && npm run sync:circuits && npm run dev` → **http://localhost:3000** (not `127.0.0.1`)  
-3. **Relayer** (recommended for strongest story — deposit G ≠ exit tx source):
+### Environment
 
-   ```bash
-   cd scripts/relayer
-   RELAYER_SECRET=<SD...> \
-   VAULT_ID=CCSA45EVCX3JJDE5OIGJFGWAQPYWD65MMTQZKL66ZILZDMVAUXZXLV4H \
-   npm run server
-   ```
+```bash
+cd web && npm run sync:circuits && npm run dev
+# Open http://localhost:3000  (not 127.0.0.1 — passkeys)
+```
 
-4. Use a pool with **exit enabled** (≥3 notes in that pool — e.g. 10 XLM or 100 XLM)  
-5. Optional second Freighter account as **exit recipient** (shows unlinkability)  
-6. Have [stellar.expert testnet vault](https://stellar.expert/explorer/testnet/contract/CCSA45EVCX3JJDE5OIGJFGWAQPYWD65MMTQZKL66ZILZDMVAUXZXLV4H) open in another tab for a 5s cutaway
+`web/.env.local`:
 
----
+```
+NEXT_PUBLIC_VAULT_CONTRACT_ID=CCSA45EVCX3JJDE5OIGJFGWAQPYWD65MMTQZKL66ZILZDMVAUXZXLV4H
+ZK_MOCK_PROOF=false
+NEXT_PUBLIC_ZK_MOCK_PROOF=false
+NEXT_PUBLIC_RELAYER_URL=http://127.0.0.1:8787
+```
 
-## Recommended structure (~2:30)
+### Relayer (recommended — shows deposit wallet ≠ exit tx source)
 
-### [0:00–0:20] Problem + one-liner
+```bash
+cd scripts/relayer
+RELAYER_SECRET=<SD...> \
+VAULT_ID=CCSA45EVCX3JJDE5OIGJFGWAQPYWD65MMTQZKL66ZILZDMVAUXZXLV4H \
+npm run server
+```
 
-> "On Stellar, every payment is public — anyone can link sender and receiver. **zk-tornado** brings Tornado-style **privacy pools** to Soroban: fixed denominations, zero-knowledge exit proofs, and optional relayer submission so your deposit wallet isn't the same as your withdraw transaction."
+### Accounts & pool
 
-*On screen:* Dashboard or title slide with repo name.
+- Freighter on **Testnet**, **15+ XLM** (retakes + fees)
+- Pick a pool with **≥ 3 notes** already (10 XLM or 100 XLM pool) so exit is not blocked
+- Optional: second G address as **exit recipient** (can have 0 XLM)
 
----
+### Recording (OBS)
 
-### [0:20–0:35] Stellar + ZK stack (load-bearing)
+- Use **Display Capture** (full screen), not Window Capture on Chrome only — **Freighter popups** are a separate extension window and won’t show otherwise
+- macOS: System Settings → Privacy → **Screen Recording** → enable OBS
 
-> "Deposits call **`join_pool`** on our testnet vault — only a commitment enters the Merkle tree. Withdrawals call **`exit_pool`** with an **UltraHonk proof** verified on-chain by a Soroban verifier contract. The ZK circuit proves you own a note and burns its nullifier — without revealing **which** deposit it was. That's the core security property; everything else is UX."
+### Tabs to have ready
 
-*On screen:* Brief flash of README **How it works** section or stellar.expert contract page (`exit_pool`, `verify_proof` in tx events if you have a prior tx).
-
-> *(Optional +10s if under 3 min)* "Full stack — Noir `pool_actions`, Poseidon2 commitments, browser UltraHonk, three Merkle pools on Soroban — is in the GitHub README for reviewers."
-
----
-
-### [0:35–0:50] Connect + Passkey
-
-> "I connect Freighter on testnet. Notes are controlled by a **passkey** — no seed phrase, no Tornado backup file. Secrets are derived locally and never sent to a server."
-
-*On screen:* Connect → Unlock passkey (Touch ID).
-
----
-
-### [0:50–1:25] Deposit
-
-> "I deposit **10 XLM**. The wallet splits amounts into fixed **1 / 10 / 100 XLM pools**, like Tornado. Each join is one on-chain transaction; only commitments are public."
-
-*On screen:* Deposit tab → enter 10 → confirm Freighter → show note + pool line `exit enabled` or privacy badge.
-
-> "The pool counter is the **anonymity set** — more joins means stronger unlinkability when someone exits later."
+- App: `http://localhost:3000`
+- Optional 5s cutaway: [Vault on stellar.expert](https://stellar.expert/explorer/testnet/contract/CCSA45EVCX3JJDE5OIGJFGWAQPYWD65MMTQZKL66ZILZDMVAUXZXLV4H)
+- Optional: GitHub README or [Deposit / Exit diagrams](architecture.md#1-system-diagram)
 
 ---
 
-### [1:25–1:45] (Optional, cut if over 3 min) Rescan
+## Main script (~2:30)
 
-> "Same passkey on a new browser: **Rescan from chain** rebuilds my notes from join events — no manual backup for my own deposits."
+Read the **Voiceover** column; do the **On screen** column. Target **2:00–2:45**; hard cap **3:00**.
 
-*Skip this if tight on time — judges care more about deposit → exit + ZK.*
+### Scene 1 — Problem (0:00 – 0:25)
 
----
+| Time | On screen | Voiceover |
+|------|-----------|-----------|
+| 0:00 | Dashboard or app title **zk-tornado** | “Stellar payments are public — anyone can link who paid whom. **zk-tornado** adds Tornado-style **privacy pools** on Soroban: you deposit native XLM into fixed **1, 10, or 100 XLM** pools, and you exit with a **zero-knowledge proof** so observers can’t tell which deposit you spent.” |
 
-### [1:45–2:25] Exit + ZK proof
-
-> "To exit, I pick a note and a **recipient** — can be a different G address than the one that deposited. The browser builds a witness and runs **Noir + UltraHonk** proof generation — this takes roughly half a minute on testnet."
-
-*On screen:* Exit tab → select note → recipient → show **Generating UltraHonk proof** progress → wait until done.
-
-> "The proof encodes: valid Merkle path, correct nullifier, pool denomination, and **no new shielded outputs** — exit-only. I submit via the **relayer** so the transaction source is the relayer, not my deposit wallet."
-
-*On screen:* Exit via relayer → success + tx link.
+**Requirement hit:** real-world problem (cross-border / graph analysis on transparent ledger).
 
 ---
 
-### [2:25–2:45] Result + honesty
+### Scene 2 — What ZK does here (0:25 – 0:50)
 
-> "XLM arrives at the recipient. Observers can't tie this exit to my earlier deposit inside the pool. The recipient address is still public — we're breaking **deposit→withdraw linkage**, not hiding the payee. Testnet demo, not audited; full source on GitHub."
+| Time | On screen | Voiceover |
+|------|-----------|-----------|
+| 0:25 | Flash [Exit diagram](architecture.md#exit-exit_pool--zk) or README “How it works” for 3–5s | “Here’s what ZK is **doing** — not decoration. On deposit, only a **commitment** goes on-chain. On exit, the wallet proves in **Noir** that it knows a valid note: correct **Merkle path**, correct **nullifier**, right **pool denomination** — **without revealing which leaf** in the tree. The proof is **UltraHonk**, verified on testnet by a **Soroban verifier contract**. No valid proof, no withdrawal — the vault reverts.” |
 
-*Optional 5s cutaway:* stellar.expert — deposit tx from wallet A, exit tx source = relayer.
-
----
-
-### [2:45–3:00] Close
-
-> "zk-tornado: **real ZK on Soroban**, passkey wallet, Tornado-style pools on native XLM. Thanks for watching."
+**Requirement hit:** ZK + Stellar, load-bearing (verifier on-chain, proof mandatory).
 
 ---
 
-## Short voiceover-only version (~90s)
+### Scene 3 — Connect & passkey (0:50 – 1:05)
 
-If proof generation eats time, record **deposit + exit in one take** and use this compressed script:
+| Time | On screen | Voiceover |
+|------|-----------|-----------|
+| 0:50 | Connect wallet → Unlock passkey (Touch ID) | “I connect **Freighter** on testnet. Note secrets come from a **passkey** — derived locally, never sent to a server. Same idea as a wallet, without copying Tornado backup strings.” |
 
-1. **Problem (15s):** Public Stellar payments are linkable; pools + ZK exits fix that.  
-2. **ZK + Stellar (20s):** `join_pool` commitments, `exit_pool` + UltraHonk verifier on testnet — proof is mandatory.  
-3. **Demo (45s):** Passkey → deposit 10 XLM → exit to new address → relayer submits → done.  
-4. **Close (10s):** Open source, testnet, not audited.
-
----
-
-## DoraHacks submission checklist
-
-- [ ] **GitHub** link public, README with setup + `CCSA45…` vault ID  
-- [ ] **Video** 2–3 min, shows working deposit + exit  
-- [ ] Video states **what ZK proves** (note ownership + nullifier, not which leaf)  
-- [ ] Video shows **Soroban** interaction (Freighter tx or explorer)  
-- [ ] README / [architecture.md](architecture.md) explain stack for reviewers who skip the video  
-- [ ] README notes **limitations** (testnet, min pool size, exit recipient public, not audited)  
-- [ ] Submit on DoraHacks before **Jun 29, 2026 12:00 PM PST**
+**Requirement hit:** Stellar integration (Freighter / testnet).
 
 ---
 
-## One-liner (title / BUIDL description)
+### Scene 4 — Deposit (1:05 – 1:35)
 
-**Fixed-denomination privacy pools on Stellar: browser Noir/UltraHonk proofs verified in Soroban, passkey notes, relayer gasless exit — Tornado-style unlinkability on transparent XLM.**
+| Time | On screen | Voiceover |
+|------|-----------|-----------|
+| 1:05 | Deposit tab → enter **10 XLM** → Freighter approve | “I deposit **10 XLM**. The app splits into fixed pools — here, one **10 XLM** note in **pool 1**. Freighter signs **`join_pool`** on our Soroban vault.” |
+| 1:20 | Success: note listed, pool shows **N / 3 min notes** | “On-chain you only see the **commitment** and **leaf index** — not my note secrets. The pool needs at least **three notes** before anyone can exit; that’s our testnet minimum anonymity set.” |
+
+**Requirement hit:** working demo + Stellar (`join_pool`, SAC transfer).
 
 ---
 
-## FAQ (voiceover or README)
+### Scene 5 — Exit + ZK proof (1:35 – 2:20) ★ most important
+
+| Time | On screen | Voiceover |
+|------|-----------|-----------|
+| 1:35 | Exit tab → select note → recipient G (different from deposit wallet if possible) | “To withdraw, I pick my note and a **recipient address** — it can be a fresh account.” |
+| 1:45 | Status: *Loading on-chain Merkle tree…* then *Generating ZK proof…* | “The browser loads the pool Merkle tree from the **vault contract**, builds a witness, and runs **Noir plus UltraHonk** locally. This takes about **thirty to ninety seconds** — I’ll let it finish; this is the real proof step.” |
+| 2:00 | **ProveProgress** bar completes — do not skip | “The proof and **public inputs** go to **`exit_pool`**. The verifier checks them before any XLM moves.” |
+| 2:10 | Exit via **relayer** → success + tx link | “I submit through our **relayer** so the **transaction source** is the relayer, not the wallet that deposited. Recipient gets **10 XLM minus the relayer fee**.” |
+
+**Requirement hit:** demo working + ZK visible (proof progress) + Stellar (`exit_pool`, verifier).
+
+**If proof step was pre-recorded:** splice in a clearly labeled clip, but live proof bar is stronger for judges.
+
+---
+
+### Scene 6 — Result & honest close (2:20 – 2:45)
+
+| Time | On screen | Voiceover |
+|------|-----------|-----------|
+| 2:20 | Recipient balance or stellar.expert: exit tx (source = relayer) | “Money arrived. Inside the pool, this exit is **unlinkable** from my deposit. The recipient is still public — we break **deposit-to-withdraw linkage**, not payee hiding.” |
+| 2:35 | GitHub repo / README | “This is **testnet**, **not audited**. Full source, architecture diagrams, and known limits are in the **README**. Thanks for watching.” |
+
+**Requirement hit:** open-source repo + honesty (organizers prefer this over polished mystery).
+
+---
+
+## One paragraph (if you prefer reading, not tables)
+
+> Stellar payments are public; **zk-tornado** adds fixed **1 / 10 / 100 XLM** privacy pools on Soroban. Deposits call **`join_pool`** — only commitments on-chain. Exits need a **Noir `pool_actions` proof** verified by an **UltraHonk Soroban verifier**; without it, withdrawal fails. I connect Freighter, unlock a **passkey**, deposit **10 XLM**, then exit to another address while the browser generates the proof. A **relayer** submits the tx so my deposit wallet isn’t the exit source. Unlinkability is inside the pool; recipient stays public. Testnet demo, open source on GitHub, not audited.
+
+~40 seconds at normal pace — use as intro or B-roll voiceover under diagrams.
+
+---
+
+## 90-second emergency cut
+
+If UltraHonk eats your budget, pre-deposit off-camera and record:
+
+| Sec | Content |
+|-----|---------|
+| 0–15 | Problem + “ZK proof required for exit on Soroban” |
+| 15–30 | Flash architecture **Exit** diagram |
+| 30–50 | Connect + passkey (5s) → Exit only: note + recipient |
+| 50–75 | **Full proof progress bar** → relayer submit → success |
+| 75–90 | “Open source README + testnet + not audited” |
+
+Still hit all three submission requirements if proof bar and `exit_pool` success are visible.
+
+---
+
+## Shot checklist (tick while editing)
+
+- [ ] App visibly running (localhost or deployed)
+- [ ] Freighter / wallet interaction shown (or full-screen capture caught popup)
+- [ ] **`join_pool`** deposit completes
+- [ ] **ZK proof generation** visible (progress UI, not skipped)
+- [ ] **`exit_pool`** completes; recipient receives XLM
+- [ ] Voiceover explains **what the proof proves** (Merkle + nullifier, hides leaf)
+- [ ] Voiceover mentions **Soroban verifier** on testnet
+- [ ] Closing mention of **GitHub + README**
+- [ ] Honest line: **testnet, not audited**
+- [ ] Total length **≤ 3:00**
+
+---
+
+## BUIDL submission copy-paste
+
+**Title:** zk-tornado — Privacy pools on Stellar with Noir / UltraHonk
+
+**One-liner:**
+
+Fixed-denomination Tornado-style pools on Soroban: browser Noir/UltraHonk exit proofs verified on-chain, passkey-derived notes, relayer-assisted unlinkable withdraw on native XLM.
+
+**Description (short):**
+
+zk-tornado lets users deposit XLM into 1 / 10 / 100 XLM pools on testnet Soroban. Only commitments enter the Merkle tree. Withdrawals require a valid `pool_actions` ZK proof checked by an UltraHonk verifier contract — load-bearing, not cosmetic. Web wallet: passkey secrets, local proving, optional relayer exit. Open source with architecture docs and honest limitations.
+
+**Repo URL:** `<your public GitHub URL>`
+
+**Demo video:** `<YouTube / Loom / uploaded file URL>`
+
+**Contract IDs (testnet):**
+
+- Vault: `CCSA45EVCX3JJDE5OIGJFGWAQPYWD65MMTQZKL66ZILZDMVAUXZXLV4H`
+- Verifier: `CA6RD6K36U3QERNRMX6DBDK6ZP2VRSCXSD7MSMLJ22NDAIQWJKQ57CFR`
+
+---
+
+## DoraHacks checklist
+
+- [ ] Public GitHub (or GitLab/Bitbucket) with full source
+- [ ] README: what you built, setup, **honest** WIP / limitations
+- [ ] Demo video **2–3 min**, project **working** on screen
+- [ ] Video explains **what ZK is doing** (proof gates exit)
+- [ ] Stellar testnet: Soroban vault + verifier + Freighter
+- [ ] Submit before **June 29, 2026, 12:00 PM PST** ([hackathon page](https://dorahacks.io/hackathon/stellar-hacks-zk/detail))
+
+---
+
+## FAQ (for voiceover or README)
 
 | Question | Answer |
 |----------|--------|
-| Why is ZK "load-bearing"? | Contract rejects exit without valid proof; mock proofs fail on our Real ZK verifier. |
-| Real-world use? | Payroll privacy, donation unlinkability, reducing graph analysis on cross-border XLM flows. |
-| What's private? | Which deposit funded which exit (within the pool). |
-| What's public? | Exit recipient, pool size, join/exit events. |
-| vs Ethereum Tornado? | Same pool model; Stellar native asset + Soroban verify + passkey instead of note strings. |
-| Min pool size? | Testnet requires ≥3 notes per pool before exit (shown as `N / 3 min notes for exit`). |
-| Full technical spec? | [architecture.md](architecture.md) — Merkle, witness, public inputs, relayer API. |
+| Why is ZK load-bearing? | `exit_pool` calls verifier; invalid or mock proofs **revert**. |
+| What does the proof prove? | Valid note in Merkle tree + nullifier; **not** which deposit. |
+| Why Stellar / Soroban? | Native XLM SAC, Poseidon2 host fns, deployed UltraHonk verifier on testnet. |
+| Why Noir? | Rust-like circuits; fits Stellar’s Noir verifier path (see hackathon Resources). |
+| Real-world angle? | Unlinkability for payroll, donations, or reducing graph analysis on public XLM flows. |
+| What’s public? | Join tx source, exit recipient, pool size, nullifiers. |
+| What’s private? | Which commitment you spent (within the pool). |
+| Min pool size? | ≥ **3 notes** per pool on testnet before exit. |
+| More technical detail? | [architecture.md](architecture.md) — Deposit/Exit diagrams, public inputs, relayer API. |
 
 ---
 
-## Recording tips (hackathon-specific)
+## What not to do
 
-- **Show the proof step** — judges must see ZK is not faked; wait for the progress bar.  
-- **Say "UltraHonk" and "Soroban verifier" once** — signals load-bearing ZK on Stellar.  
-- **Technical depth → README** — video stays 2–3 min; point reviewers to README **How it works** for circuit, public inputs, and relayer.  
-- **OBS / screen capture** — Freighter sign prompts are a **separate extension window**; use **Display Capture** (full screen), not Window Capture on Chrome only, or wallet popups won't appear in the recording.  
-- **Don't hide failures** — if something is WIP, say it; organizers prefer honest READMEs.  
-- **No need for Cloudflare deploy** — local localhost demo + public repo is enough per community norm.
+- Don’t spend 3 minutes only on UI polish with no proof step
+- Don’t claim “fully private Stellar payments” — recipient and join source are public
+- Don’t skip saying proof is **verified in a contract**
+- Don’t use Window Capture if Freighter never appears — judges may think signing is faked
