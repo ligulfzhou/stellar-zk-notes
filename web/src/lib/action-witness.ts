@@ -9,12 +9,14 @@ import {
   fieldHexListToBigInt,
   merkleWitness,
   merkleWitnessFromTreeState,
+  verifyMerklePath,
   type VaultTreeState,
 } from "./merkle-witness-client";
 import { poolById } from "./pool-config";
 import { deriveDepositSecretFromSeed } from "./root-seed";
 import type { Note } from "./note-types";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
+import { findCommitmentLeafIndex } from "./vault-events";
 
 export const MAX_ACTION_SLOTS = 4;
 
@@ -93,6 +95,9 @@ async function buildMerkleWitness(params: {
       params.treeState.zeros
     );
     const leafAt = (index: number) => {
+      if (index === params.leafIndex) {
+        return params.spendLeaf;
+      }
       const slot = params.commitments[index];
       return slot ? hexToBigInt(slot) : undefined;
     };
@@ -145,6 +150,28 @@ async function buildInputSlot(params: {
     );
   }
 
+  const chainCommitAtLeaf = params.commitments[params.leafIndex];
+  if (chainCommitAtLeaf) {
+    if (normalizeHex(chainCommitAtLeaf) !== normalizeHex(spendCommitmentHex)) {
+      const alt = findCommitmentLeafIndex(
+        params.commitments.slice(0, params.leafCount),
+        spendCommitmentHex
+      );
+      if (alt !== null) {
+        throw new Error(
+          `Note leaf index ${params.leafIndex} is stale — commitment is at leaf ${alt}. Notes → Rescan from chain`
+        );
+      }
+      throw new Error(
+        `On-chain commitment at leaf ${params.leafIndex} does not match this note — Notes → Rescan`
+      );
+    }
+  } else if (params.leafIndex < params.leafCount) {
+    throw new Error(
+      `Missing on-chain commitment at leaf ${params.leafIndex} — Notes → Rescan from chain`
+    );
+  }
+
   const nullifierHex = await computeNullifier(
     params.nullifierSecret,
     spendCommitmentHex
@@ -163,8 +190,15 @@ async function buildInputSlot(params: {
     const expected = normalizeHex(params.onChainMerkleRoot);
     const actual = "0x" + root.toString(16).padStart(64, "0").toLowerCase();
     if (expected !== actual) {
-      throw new Error("Merkle root mismatch — Rescan from chain");
+      throw new Error("Merkle root mismatch — Notes → Rescan from chain");
     }
+  }
+
+  const pathValid = await verifyMerklePath(spendLeaf, path, indices, root);
+  if (!pathValid) {
+    throw new Error(
+      "Merkle witness does not verify — Notes → Rescan from chain"
+    );
   }
 
   return { path, indices, root, nullifierHex };

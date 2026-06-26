@@ -17,12 +17,19 @@ function fieldDecToHex(value: string): string {
 }
 
 async function hasBarretenberg(): Promise<boolean> {
-  try {
-    await execFileAsync("which", ["bb"]);
-    return true;
-  } catch {
-    return false;
+  const candidates = [
+    "bb",
+    path.join(process.env.HOME ?? "", ".bb", "bin", "bb"),
+  ];
+  for (const bin of candidates) {
+    try {
+      await execFileAsync(bin, ["--version"]);
+      return true;
+    } catch {
+      /* try next */
+    }
   }
+  return false;
 }
 
 export async function POST(request: Request) {

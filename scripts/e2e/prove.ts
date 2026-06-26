@@ -8,7 +8,10 @@ import {
   merkleWitnessFromTreeState,
   fieldHexListToBigInt,
 } from "../../web/src/server/merkle.ts";
-import { buildChainState } from "../../web/src/server/chain-state.ts";
+import {
+  buildChainState,
+  buildChainStateForProve,
+} from "../../web/src/server/chain-state.ts";
 import { computeCommitmentV2, depositSecretToField } from "../../web/src/lib/commitment-v2.ts";
 import { computeNullifier } from "../../web/src/lib/commitment-client.ts";
 import { POOLS } from "../../web/src/lib/pool-config.ts";
@@ -96,6 +99,9 @@ async function buildMerkleWitness(params: {
       params.chain.treeState.zeros
     );
     const leafAt = (index: number) => {
+      if (index === params.leafIndex) {
+        return params.spendLeaf;
+      }
       const slot = poolCommitments[index];
       return slot ? hexToBigInt(slot) : undefined;
     };
@@ -157,17 +163,7 @@ export async function proveExit(params: {
   reader: string;
   relayerFeeStroops?: string;
 }): Promise<ProveResult> {
-  const chain = await buildChainState(
-    params.reader,
-    [],
-    [
-      {
-        leafIndex: params.leafIndex,
-        commitment: params.commitmentHex,
-        poolId: params.poolId,
-      },
-    ]
-  );
+  const chain = await buildChainStateForProve(params.reader, params.poolId);
 
   const onChainRoot = chain.poolMerkleRoots[params.poolId];
   if (!onChainRoot || !chain.poolLeafCounts[params.poolId]) {

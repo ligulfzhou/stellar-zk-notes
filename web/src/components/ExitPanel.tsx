@@ -20,6 +20,7 @@ import {
 } from "@/lib/config";
 import { fetchRelayerInfo, submitExitViaRelayer } from "@/lib/relayer-exit";
 import { poolById } from "@/lib/pool-config";
+import { denseCommitmentSlots } from "@/lib/vault-events";
 import { persistVaultState, useWalletStore } from "@/store/useWalletStore";
 import { usePasskeyStore } from "@/store/usePasskeyStore";
 import { TxLink } from "@/components/TxLink";
@@ -116,12 +117,7 @@ export function ExitPanel() {
         body: JSON.stringify({
           reader: publicKey,
           poolId: note.poolId,
-          localPoolCommitments: poolChainCommitments,
-          notes: unspent.map((n) => ({
-            leafIndex: n.leafIndex,
-            commitment: n.commitment,
-            poolId: n.poolId,
-          })),
+          mode: "prove",
         }),
       });
       const chainData = (await chainRes.json()) as {
@@ -139,6 +135,7 @@ export function ExitPanel() {
       const spendSecrets = await resolveNoteSecretsFromVault(note);
       const depositSecret = depositSecretBytesForNote(note);
       const feeStr = feeStroops.toString();
+      const leafCount = chainData.leafCount ?? chainData.commitments.length;
       const built = await buildExitWitness({
         poolId: note.poolId,
         value: note.value.toString(),
@@ -147,9 +144,9 @@ export function ExitPanel() {
         depositSecret,
         relayerFeeStroops: feeStr,
         leafIndex: note.leafIndex,
-        leafCount: chainData.leafCount ?? chainData.commitments.length,
+        leafCount,
         onChainMerkleRoot: chainData.merkleRoot ?? undefined,
-        commitments: chainData.commitments,
+        commitments: denseCommitmentSlots(chainData.commitments, leafCount),
         noteCommitment: note.commitment,
         treeState: chainData.treeState ?? undefined,
       });

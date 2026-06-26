@@ -1,9 +1,12 @@
 import { NextResponse } from "next/server";
 import { formatError } from "@/lib/format-error";
-import { buildChainState } from "@/server/chain-state";
-import { readVaultTreeState } from "@/server/soroban-vault";
+import {
+  buildChainState,
+  buildChainStateForProve,
+  type ChainState,
+} from "@/server/chain-state";
 
-function poolPayload(state: Awaited<ReturnType<typeof buildChainState>>, poolId: number) {
+function poolPayload(state: ChainState, poolId: number) {
   return {
     poolId,
     commitments: state.poolCommitments[poolId] ?? [],
@@ -20,10 +23,14 @@ export async function GET(request: Request) {
     const url = new URL(request.url);
     const reader = url.searchParams.get("reader") ?? undefined;
     const poolId = Number(url.searchParams.get("poolId") ?? "0");
-    const state = await buildChainState(reader);
-    if (reader) {
-      state.treeState = await readVaultTreeState(reader, poolId).catch(() => null);
+    const mode = url.searchParams.get("mode") ?? "prove";
+    if (!reader) {
+      return NextResponse.json({ error: "reader required" }, { status: 400 });
     }
+    const state =
+      mode === "full"
+        ? await buildChainState(reader, [], [], { poolId })
+        : await buildChainStateForProve(reader, poolId);
     if (state.missing !== null) {
       return NextResponse.json(
         {
@@ -48,20 +55,27 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       reader?: string;
       poolId?: number;
+      /** `prove` (default): contract-only, no event scan. `full`: events + local merge. */
+      mode?: "prove" | "full";
       localPoolCommitments?: string[][];
       localCommitments?: string[];
       notes?: Array<{ leafIndex: number; commitment: string; poolId?: number }>;
     };
     const poolId = body.poolId ?? 0;
-    const localPool =
-      body.localPoolCommitments ??
-      (body.localCommitments ? [body.localCommitments] : []);
-    const state = await buildChainState(body.reader, localPool, body.notes ?? []);
-    if (body.reader) {
-      state.treeState = await readVaultTreeState(body.reader, poolId).catch(
-        () => null
-      );
+    if (!body.reader) {
+      return NextResponse.json({ error: "reader required" }, { status: 400 });
     }
+    const mode = body.mode ?? "prove";
+    const state =
+      mode === "full"
+        ? await buildChainState(
+            body.reader,
+            body.localPoolCommitments ??
+              (body.localCommitments ? [body.localCommitments] : []),
+            body.notes ?? [],
+            { poolId }
+          )
+        : await buildChainStateForProve(body.reader, poolId);
     if (state.missing !== null) {
       return NextResponse.json(
         {

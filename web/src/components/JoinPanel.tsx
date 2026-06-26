@@ -255,8 +255,8 @@ export function JoinPanel() {
                   count === null
                     ? "—"
                     : count >= MIN_POOL_SIZE_TESTNET
-                      ? `${count} notes (spend enabled)`
-                      : `${count} / ${MIN_POOL_SIZE_TESTNET} min`;
+                      ? `${count} notes (exit enabled)`
+                      : `${count} / ${MIN_POOL_SIZE_TESTNET} min notes for exit`;
                 return (
                   <li key={pool.id}>
                     Pool {pool.label}: {hint}

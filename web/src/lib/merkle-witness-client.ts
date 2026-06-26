@@ -147,6 +147,24 @@ export function fieldHexListToBigInt(
   };
 }
 
+/** Walk a Merkle path and check it reaches `root` (matches pool_actions verify_merkle_path). */
+export async function verifyMerklePath(
+  leaf: bigint,
+  path: bigint[],
+  indices: boolean[],
+  root: bigint
+): Promise<boolean> {
+  let current = leaf;
+  for (let i = 0; i < TREE_HEIGHT; i++) {
+    if (indices[i]) {
+      current = await hashPair(path[i]!, current);
+    } else {
+      current = await hashPair(current, path[i]!);
+    }
+  }
+  return current === root;
+}
+
 export async function merkleWitnessFromTreeState(params: {
   leafCount: number;
   targetIndex: number;

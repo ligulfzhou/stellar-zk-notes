@@ -52,6 +52,13 @@ export function DashboardPanel() {
 
   return (
     <section className="grid gap-4 md:grid-cols-3">
+      <p className="text-sm text-zinc-500 md:col-span-3">
+        Shielded balance and unspent notes come from{" "}
+        <span className="text-zinc-400">local notes</span> in this browser
+        (IndexedDB). Connect, unlock passkey, then deposit or use Notes →
+        Rescan from chain. Pool privacy and activity are read from the vault on
+        testnet.
+      </p>
       <Card
         title="Public XLM"
         value={publicBalance !== null ? `${publicBalance} XLM` : "—"}
@@ -95,7 +102,6 @@ export function DashboardPanel() {
         <ul className="space-y-2 text-sm text-zinc-400">
           <li>Fixed pools: 1 / 10 / 100 XLM (Tornado-style denominations).</li>
           <li>Merkle tree height 16 (~65k commitments per pool).</li>
-          <li>Native XLM only; ZK proofs run locally when Real ZK is enabled.</li>
         </ul>
       </Panel>
       <Panel title="How it works">

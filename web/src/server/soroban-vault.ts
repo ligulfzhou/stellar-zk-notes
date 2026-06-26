@@ -180,18 +180,39 @@ async function readVaultMerkleTreeFromLedger(): Promise<MerkleTreeStorage | null
   return null;
 }
 
+/** Read all leaf commitments for a pool directly from the vault contract (no event scan). */
+export async function fetchPoolCommitmentsFromChain(
+  sourcePublicKey: string,
+  poolId: number,
+  leafCount: number
+): Promise<string[]> {
+  if (leafCount <= 0) return [];
+  const results = await Promise.all(
+    Array.from({ length: leafCount }, (_, leafIndex) =>
+      getVaultCommitmentAt(sourcePublicKey, poolId, leafIndex).catch(() => null)
+    )
+  );
+  return results.map((commitment) => commitment ?? "");
+}
+
 export async function readVaultTreeState(
   sourcePublicKey: string,
   poolId = 0,
   height = 16
 ): Promise<VaultTreeState | null> {
+  const levelPairs = await Promise.all(
+    Array.from({ length: height }, (_, level) =>
+      Promise.all([
+        getVaultFilledAtLevel(sourcePublicKey, level, poolId),
+        getVaultZeroAtLevel(sourcePublicKey, level, poolId),
+      ])
+    )
+  );
+
   const filled: string[] = [];
   const zeros: string[] = [];
   let usedContractFns = true;
-
-  for (let level = 0; level < height; level++) {
-    const f = await getVaultFilledAtLevel(sourcePublicKey, level, poolId);
-    const z = await getVaultZeroAtLevel(sourcePublicKey, level, poolId);
+  for (const [f, z] of levelPairs) {
     if (!f || !z) {
       usedContractFns = false;
       break;
