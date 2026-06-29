@@ -25,8 +25,7 @@ NEXT_PUBLIC_ZK_MOCK_PROOF=true
 
 ```bash
 ./scripts/build_vk_utxo_actions.sh
-./scripts/setup_ultrahonk.sh    # clones or links sibling ../zk verifier
-./scripts/build_ultrahonk_verifier.sh
+./scripts/build_ultrahonk_verifier.sh   # builds contracts/contracts/ultrahonk-verifier
 STELLAR_SOURCE=admin ./scripts/deploy_testnet.sh --real-zk
 ```
 
@@ -38,12 +37,12 @@ ZK_MOCK_PROOF=false
 NEXT_PUBLIC_ZK_MOCK_PROOF=false
 ```
 
-## Current testnet (real ZK)
+## Current testnet (real ZK, Sapling v2)
 
 | | Contract ID |
 |--|-------------|
-| Vault | `CDXNSHTPMRSDJSVHJ4K5BUJPDOT7NI6XH6HSBODRLLG3R2EYVBIATICW` |
-| Verifier | `CBY63OSDXCUVWGIKZRS4FQG27IOI5WDMYO2652SU2ELHAPE5Q4JCXMPT` |
+| Vault | `CBUBYT6RV4SLSRUVGO2PH5V7O7KPX6TCKXP7MWQ4ZBAPPBOIWFHI2YXR` |
+| Verifier | `CDAD2LXFSBJJNEHICUFYMNXCXCG27ZGF7WUHTVWAOENDVCS6IU476STF` |
 | XLM SAC | `CDLZFC3SYJYDZT7K67VZ75HPJVIEUVNIXF47ZG2FB2RMQQVU2HHGCYSC` |
 
 ## Relayer

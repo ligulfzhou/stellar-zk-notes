@@ -51,7 +51,7 @@ if [[ "$REAL_ZK" == true ]]; then
     exit 1
   fi
   "$ROOT/scripts/build_ultrahonk_verifier.sh"
-  WASM="$ROOT/third_party/ultrahonk_soroban_contract/target/wasm32v1-none/release/ultrahonk_soroban_contract.wasm"
+  WASM="$ROOT/contracts/target/wasm32v1-none/release/ultrahonk_verifier.wasm"
 
   echo "==> Deploying UltraHonk verifier (real ZK)"
   echo "    rpc: $STELLAR_RPC_URL"

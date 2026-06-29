@@ -1,0 +1,13 @@
+[package]
+name = "ultrahonk-verifier"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["lib", "cdylib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { version = "26", default-features = false, features = ["alloc"] }
+ultrahonk_soroban_verifier = { git = "https://github.com/NethermindEth/rs-soroban-ultrahonk.git", default-features = false }
