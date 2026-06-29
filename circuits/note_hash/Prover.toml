@@ -1,0 +1,3 @@
+value = "10000000"
+secret = "42"
+nullifier_secret = "7"

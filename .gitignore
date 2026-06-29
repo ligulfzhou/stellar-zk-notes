@@ -1,0 +1,62 @@
+# See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
+
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files (can opt-in for committing if needed)
+.env*
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+# zk artifacts
+/artifacts/
+
+# rust build output
+contracts/target/
+/circuits/*/target/
+
+# local proxy (copy from scripts/proxy.env.example)
+scripts/proxy.env
+scripts/relayer/node_modules/
+scripts/relayer/package-lock.json
+
+# third-party (submodule; clone via scripts/setup_ultrahonk.sh)
+/third_party/ultrahonk_soroban_contract/
+
+# web
+web/node_modules
+web/.next
+
+third_party
