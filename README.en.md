@@ -90,7 +90,8 @@ ZK_MOCK_PROOF=true STELLAR_SOURCE=alice ./scripts/e2e_testnet.sh --flow full
 | Doc | Content |
 |-----|---------|
 | [architecture.en.md](docs/architecture.en.md) | **Architecture, cryptography, Deposit/Send/Withdraw (English)** |
-| [demo-video-script.md](docs/demo-video-script.md) | **Demo video script (shot list + narration)** |
+| [demo-video-script-4min.md](docs/demo-video-script-4min.md) | **4-min demo script (primary — use this)** |
+| [demo-video-script.md](docs/demo-video-script.md) | Full demo script + 6–8 min walkthrough |
 | [architecture.md](docs/architecture.md) | 系统架构与操作详解（中文） |
 | [key-derivation.md](docs/key-derivation.md) | Mnemonic → G address + shielded keys |
 | [deploy.md](docs/deploy.md) | Testnet deploy & VK updates |

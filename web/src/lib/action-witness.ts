@@ -6,9 +6,11 @@ import {
   merkleWitnessFromTreeState,
   type VaultTreeState,
 } from "./merkle-witness-client";
+import { findCommitmentLeafIndex } from "./vault-events";
 import type { Note } from "./note-types";
 
 export const MAX_ACTION_SLOTS = 4;
+const TREE_HEIGHT = 16;
 
 export type UtxoWitnessPayload = {
   spend_value: string[];
@@ -65,24 +67,41 @@ async function buildMerkleWitness(params: {
   leafCount: number;
   leafIndex: number;
   spendLeaf: bigint;
+  spendCommitmentHex: string;
   treeState?: VaultTreeState | null;
 }) {
+  const resolvedIndex =
+    findCommitmentLeafIndex(params.commitments, params.spendCommitmentHex) ??
+    params.leafIndex;
+
+  const slot = params.commitments[resolvedIndex];
+  if (slot && normalizeHex(slot) !== normalizeHex(params.spendCommitmentHex)) {
+    throw new Error(
+      `Note commitment not at leaf ${resolvedIndex} — Notes → Rescan from chain`
+    );
+  }
+
   const hasGaps = params.commitments
     .slice(0, params.leafCount)
-    .some((slot, i) => i < params.leafCount && !slot);
+    .some((s, i) => i < params.leafCount && !s);
 
-  if (hasGaps && params.treeState) {
+  const treeStateReady =
+    Boolean(params.treeState) &&
+    (params.treeState?.filled.length ?? 0) >= TREE_HEIGHT &&
+    (params.treeState?.zeros.length ?? 0) >= TREE_HEIGHT;
+
+  if (hasGaps && treeStateReady) {
     const { filled, zeros } = fieldHexListToBigInt(
-      params.treeState.filled,
-      params.treeState.zeros
+      params.treeState!.filled,
+      params.treeState!.zeros
     );
     const leafAt = (index: number) => {
-      const slot = params.commitments[index];
-      return slot ? hexToBigInt(slot) : undefined;
+      const slotAt = params.commitments[index];
+      return slotAt ? hexToBigInt(slotAt) : undefined;
     };
     return merkleWitnessFromTreeState({
       leafCount: params.leafCount,
-      targetIndex: params.leafIndex,
+      targetIndex: resolvedIndex,
       targetLeaf: params.spendLeaf,
       filled,
       zeros,
@@ -90,13 +109,24 @@ async function buildMerkleWitness(params: {
     });
   }
 
+  if (hasGaps) {
+    throw new Error(
+      "Incomplete Merkle tree — wait for sync or Notes → Rescan from chain"
+    );
+  }
+
   const leaves: bigint[] = [];
   for (let i = 0; i < params.leafCount; i++) {
-    const slot = params.commitments[i];
-    if (!slot) throw new Error(`Missing commitment at leaf ${i}`);
-    leaves.push(hexToBigInt(slot));
+    const slotAt = params.commitments[i];
+    if (!slotAt) throw new Error(`Missing commitment at leaf ${i}`);
+    leaves.push(hexToBigInt(slotAt));
   }
-  return merkleWitness(leaves, params.leafIndex);
+  if (leaves[resolvedIndex] !== params.spendLeaf) {
+    throw new Error(
+      `Note commitment not at leaf ${resolvedIndex} — Notes → Rescan from chain`
+    );
+  }
+  return merkleWitness(leaves, resolvedIndex);
 }
 
 async function buildInputSlot(params: {
@@ -141,6 +171,7 @@ async function buildInputSlot(params: {
     leafCount: params.leafCount,
     leafIndex: params.leafIndex,
     spendLeaf,
+    spendCommitmentHex,
     treeState: params.treeState,
   });
 

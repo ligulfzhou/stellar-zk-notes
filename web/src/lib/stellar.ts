@@ -98,7 +98,13 @@ async function signAndSend(
       }
       return data.txHash;
     } catch (err) {
-      throw new Error(formatError(err));
+      const msg = formatError(err);
+      if (/connection refused|failed to fetch|networkerror/i.test(msg)) {
+        throw new Error(
+          `Relayer not reachable at ${RELAYER_URL}. Start it (scripts/relayer) or set NEXT_PUBLIC_PRIVACY_MODE=dev in web/.env.local and restart.`
+        );
+      }
+      throw new Error(msg);
     }
   }
   try {

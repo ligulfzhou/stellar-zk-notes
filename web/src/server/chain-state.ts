@@ -1,23 +1,34 @@
 import {
+  fetchVaultChainEvents,
+  mergeChainCommitments,
+  rebuildChainCommitments,
+  seedCommitmentsFromNotes,
+  type VaultChainEvent,
+} from "@/lib/vault-events";
+import {
   getVaultCommitmentAt,
   getVaultLeafCount,
   getVaultMerkleRoot,
   readVaultTreeState,
   type VaultTreeState,
 } from "@/server/soroban-vault";
-import {
-  fetchVaultChainEvents,
-  rebuildChainCommitments,
-  mergeChainCommitments,
-  seedCommitmentsFromNotes,
-  type VaultChainEvent,
-} from "@/lib/vault-events";
 
-function missingLeafIndex(slots: string[], leafCount: number): number | null {
+function commitmentGaps(slots: string[], leafCount: number): number | null {
   for (let i = 0; i < leafCount; i++) {
     if (!slots[i]) return i;
   }
   return null;
+}
+
+/** Read all leaf commitments from vault storage (authoritative for Merkle tree). */
+async function syncCommitmentsFromContract(
+  reader: string,
+  leafCount: number
+): Promise<string[]> {
+  const slots = await Promise.all(
+    Array.from({ length: leafCount }, (_, i) => fetchCommitmentAt(reader, i))
+  );
+  return slots.map((c) => c ?? "");
 }
 
 export type ChainState = {
@@ -51,18 +62,30 @@ export async function buildChainState(
   let merged = mergeChainCommitments(localChainCommitments, remote, leafCount);
   merged = seedCommitmentsFromNotes(merged, notes, leafCount);
 
+  if (reader && leafCount !== null && leafCount > 0) {
+    merged = await syncCommitmentsFromContract(reader, leafCount);
+  }
+
+  const effectiveLeafCount =
+    leafCount ?? (merged.length > 0 ? merged.length : null);
   const missing =
-    leafCount !== null ? missingLeafIndex(merged, leafCount) : null;
+    effectiveLeafCount !== null
+      ? commitmentGaps(merged, effectiveLeafCount)
+      : null;
 
   return {
     events,
     commitments: merged,
     eventCount: events.length,
-    leafCount,
+    leafCount: leafCount ?? effectiveLeafCount,
     merkleRoot,
     missing,
     treeState,
-    canProveWithTreeState: missing === null && treeState !== null,
+    canProveWithTreeState:
+      missing === null &&
+      treeState !== null &&
+      treeState.filled.length >= 16 &&
+      treeState.zeros.length >= 16,
   };
 }
 

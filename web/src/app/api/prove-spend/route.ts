@@ -134,11 +134,16 @@ export async function POST(request: Request) {
       .slice(0, body.leafCount)
       .some((slot, i) => i < body.leafCount && !slot);
 
+    const treeStateReady =
+      Boolean(body.treeState) &&
+      (body.treeState?.filled.length ?? 0) >= 16 &&
+      (body.treeState?.zeros.length ?? 0) >= 16;
+
     let merklePath: bigint[];
     let indices: boolean[];
     let root: bigint;
 
-    if (hasGaps && body.treeState) {
+    if (hasGaps && treeStateReady) {
       const { filled, zeros } = fieldHexListToBigInt(
         body.treeState.filled,
         body.treeState.zeros
@@ -155,6 +160,14 @@ export async function POST(request: Request) {
         zeros,
         leafAt,
       }));
+    } else if (hasGaps) {
+      return NextResponse.json(
+        {
+          error:
+            "Incomplete Merkle tree — wait for sync or Notes → Rescan from chain",
+        },
+        { status: 400 }
+      );
     } else {
       const leaves: bigint[] = [];
       for (let i = 0; i < body.leafCount; i++) {
