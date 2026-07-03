@@ -1,7 +1,8 @@
 # zk-utxo Demo Video Script
 
 > **Purpose:** Hackathon / investor demo — show arbitrary-amount UTXO private payments on Stellar.  
-> **Suggested length:** 6–8 minutes (full) · 2–3 minutes (short cut).  
+> **Recommended upload:** **~4 minutes** (architecture + live demo) — see §1 below.  
+> **Also available:** 6–8 min full walkthrough (§2) · 2:30 ultra-short (no architecture — not recommended).  
 > **Language:** English narration recommended; Chinese subtitles optional.  
 > **Architecture reference:** [architecture.en.md](./architecture.en.md)
 
@@ -55,10 +56,63 @@ Use **pre-created wallets** with mnemonic already backed up; on camera only show
 
 ## 1. Video Structure Overview
 
+### ★ Recommended primary cut (~4:00) — **use this for submission**
+
+Architecture stays; trim wallet intro, dashboard recap, and relayer detail.
+
+| Scene | Duration | Content |
+|-------|----------|---------|
+| A | 0:00–0:25 | Hook — public payment on Stellar Expert + one-line problem |
+| B | 0:25–1:10 | **Architecture (keep)** — system diagram + 3 flows |
+| C | 1:10–1:35 | Wallet — Unlock only, show `G…` + `zkstellar1…` |
+| D | 1:35–2:10 | Deposit 10 XLM + Expert event |
+| E | 2:10–3:25 | Send 3 XLM + proof (time-lapse OK) |
+| F | 3:25–3:50 | Withdraw to `G…` |
+| H | 3:50–4:00 | CTA — GitHub + hackathon |
+
+**Why ~4 min:** Judges get the **mental model** (Scene B) before the UI demo. Without architecture, Deposit/Send/Withdraw look like opaque button clicks. With it, ~4 minutes still fits attention span.
+
+**Scene B is non-negotiable for this project** — zk-utxo’s story is “UTXO + ZK on Soroban”, not “another wallet UI”.
+
+#### Scene B — what to show in 45 seconds (primary cut)
+
+Use **`docs/architecture.en.md` §1 diagram** (Web wallet ↔ Vault ↔ Merkle tree). Pointer or highlight in this order:
+
+1. **One mnemonic** → `G` address + shielded keys (5s)
+2. **Deposit** — commitment leaf, **no ZK** (10s)
+3. **Send** — `utxo_actions` proof, amounts hidden inside pool (15s)
+4. **Withdraw** — same circuit, public XLM out (10s)
+5. Lower-third: `UltraHonk · Soroban · arbitrary amounts` (5s)
+
+**Narration (English, ~80 words — read during Scene B):**
+> “One recovery phrase gives you a public Stellar account and a shielded identity. Deposit puts a commitment into a global Merkle tree — the chain never sees the note amount. Send proves in zero knowledge that your inputs are valid and balance is conserved — without revealing amounts. Withdraw uses the same circuit to pay public XLM back out. All proofs are UltraHonk, verified on Soroban testnet.”
+
+#### Primary cut — what to skip
+
+| Skip | Save |
+|------|------|
+| Create wallet / mnemonic | Start at Unlock (pre-created wallet) |
+| Dashboard tour | One glance at shielded balance after deposit |
+| Relayer exit path | One spoken line: “relayer exit also supported” |
+| Bob second browser | Self-send OK; mention recipient decrypts off-chain |
+| Terminal / `nargo test` | — |
+
+#### Primary cut — proving on camera
+
+Send + Withdraw proving ~60s each raw. **Do not** show full 2 minutes of spinner.
+
+- Record real ProveProgress for **Send only** (5–10s on screen, rest time-lapsed 3×)
+- Withdraw: cut from click → success, subtitle “ZK proof verified on-chain”
+- Voiceover during Send prove: “The browser generates an UltraHonk proof locally — keys never leave the device.”
+
+---
+
+### Full walkthrough (~6–8 min) — rehearsal / deep dive
+
 | Scene | Duration | Content |
 |-------|----------|---------|
 | A | 0:00–0:45 | Hook + title + problem |
-| B | 0:45–1:30 | Architecture (diagram) |
+| B | 0:45–1:30 | Architecture (diagram) — extended narration |
 | C | 1:30–2:30 | Wallet setup (Notes tab) |
 | D | 2:30–3:30 | Deposit |
 | E | 3:30–5:30 | Send (private transfer) |
@@ -66,7 +120,13 @@ Use **pre-created wallets** with mnemonic already backed up; on camera only show
 | G | 6:45–7:30 | Dashboard + privacy recap |
 | H | 7:30–8:00 | CTA + links |
 
-**Short cut (2:30):** A (20s) → C unlock only (20s) → D (40s) → E with mock/fast cut (50s) → G (20s)
+Use when: internal review, mentor feedback, or YouTube “full demo” second link.
+
+---
+
+### Ultra-short (2:30) — emergency only
+
+A (20s) → C unlock (20s) → D (40s) → E fast cut (50s) → H (20s). **Drops architecture** — only if hard time limit; not recommended for zk-utxo.
 
 ---
 
