@@ -1,27 +1,33 @@
 import type { PasskeyVaultConfig } from "./passkey";
+import type { EncryptedMnemonic } from "./encrypted-secrets";
 
 export type NoteStatus = "unspent" | "spent";
 
 export interface Note {
   id: string;
   value: bigint;
-  /** Per-note randomness (rcm) — sender-chosen for outputs, stored locally for spends. */
   noteRandomness: string;
-  /** Spending public key bound in the commitment (owner). */
+  /** Diversified recipient pk bound in commitment (equals spending_pk when d=0). */
   spendingPk: string;
+  /** Payment address diversifier (0 = default / v2-compatible). */
+  diversifier: string;
   commitment: string;
   leafIndex: number;
   status: NoteStatus;
   createdAt: number;
-  /** Received via shielded send (decrypted from chain event). */
   received?: boolean;
 }
 
 export interface StoredNoteVault {
-  version: 6;
+  version: 7;
+  /** BIP39 mnemonic encrypted at rest (passkey PRF or password). */
+  encryptedMnemonic: EncryptedMnemonic | null;
+  /** Optional password-wrap salt when method=password. */
+  passwordSalt: string | null;
   passkey: PasskeyVaultConfig | null;
+  /** Next diversifier index for fresh receive addresses. */
+  addressIndex: number;
   notes: Note[];
-  /** Global Merkle leaf commitments (index = leaf slot). */
   chainCommitments: string[];
 }
 
@@ -33,13 +39,21 @@ export function sumUnspentNotes(notes: Note[]): bigint {
 
 export function defaultVault(): StoredNoteVault {
   return {
-    version: 6,
+    version: 7,
+    encryptedMnemonic: null,
+    passwordSalt: null,
     passkey: null,
+    addressIndex: 1,
     notes: [],
     chainCommitments: [],
   };
 }
 
+export function hasWalletSecrets(vault: StoredNoteVault): boolean {
+  return Boolean(vault.encryptedMnemonic);
+}
+
+/** @deprecated */
 export function hasPasskey(vault: StoredNoteVault): boolean {
   return Boolean(vault.passkey?.credentials.length);
 }

@@ -4,7 +4,8 @@ import { create } from "zustand";
 import type { Note, StoredNoteVault } from "@/lib/note";
 import { sumUnspentNotes, hasPasskey } from "@/lib/note";
 import { loadVault, saveVault } from "@/lib/note-store";
-import { connectWallet, getPublicKey } from "@/lib/wallet";
+import { connectWallet } from "@/lib/wallet";
+import { useSecretsStore } from "@/store/useSecretsStore";
 
 type Tab = "dashboard" | "deposit" | "send" | "withdraw" | "notes";
 
@@ -77,23 +78,39 @@ export const useWalletStore = create<WalletState>((set, get) => ({
     try {
       const publicKey = await connectWallet();
       await get().onAccountChange(publicKey);
+      await useSecretsStore.getState().refreshWalletStatus();
       set({ connecting: false });
     } catch (err) {
+      const message =
+        err instanceof Error ? err.message : "Failed to open wallet";
+      const goNotes =
+        message.includes("Notes tab") || message.includes("Notes");
       set({
         connecting: false,
-        error: err instanceof Error ? err.message : "Failed to connect wallet",
+        error: message,
+        ...(goNotes ? { activeTab: "notes" as const } : {}),
       });
     }
   },
 
   hydrate: async () => {
-    const publicKey = await getPublicKey();
+    const secrets = useSecretsStore.getState();
+    if (secrets.unlocked && secrets.stellarPublicKey) {
+      const vault = await loadVault(secrets.stellarPublicKey);
+      set({ publicKey: secrets.stellarPublicKey, ...vaultToState(vault) });
+      await secrets.refreshWalletStatus();
+      return;
+    }
+    const { loadWalletMeta } = await import("@/lib/wallet-meta");
+    const meta = await loadWalletMeta();
+    const publicKey = meta?.stellarPublicKey ?? null;
     if (!publicKey) {
       set({ publicKey: null, ...emptyAccountState });
       return;
     }
     const vault = await loadVault(publicKey);
     set({ publicKey, ...vaultToState(vault) });
+    await secrets.refreshWalletStatus();
   },
 }));
 

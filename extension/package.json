@@ -1,0 +1,30 @@
+{
+  "name": "zk-stellar-wallet-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "sync:assets": "bash scripts/sync_assets.sh",
+    "prebuild": "npm run sync:assets",
+    "dev": "vite build --watch",
+    "build": "vite build --config vite.background.config.ts && vite build --config vite.content.config.ts && vite build --config vite.injected.config.ts && vite build --config vite.popup.config.ts && vite build --config vite.offscreen.config.ts && node scripts/postbuild.mjs"
+  },
+  "dependencies": {
+    "@noble/ciphers": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "@noir-lang/acvm_js": "^1.0.0-beta.9-cb6b7e3.nightly",
+    "@noir-lang/noir_js": "^1.0.0-beta.9-cb6b7e3.nightly",
+    "@noir-lang/noirc_abi": "^1.0.0-beta.9-cb6b7e3.nightly",
+    "@stellar/stellar-sdk": "^15.1.0",
+    "@zk-utxo/wallet-core": "file:../packages/wallet-core",
+    "buffer": "^6.0.3",
+    "events": "^3.3.0",
+    "readable-stream": "^4.7.0"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.313",
+    "typescript": "^5",
+    "vite": "^6.3.5",
+    "vite-plugin-node-polyfills": "^0.28.0"
+  }
+}

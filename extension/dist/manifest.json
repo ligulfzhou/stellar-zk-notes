@@ -1,0 +1,44 @@
+{
+  "manifest_version": 3,
+  "name": "ZK Stellar Wallet",
+  "version": "0.1.0",
+  "description": "Unified Stellar account + zk-utxo shielded wallet",
+  "action": {
+    "default_title": "ZK Stellar Wallet",
+    "default_popup": "popup.html"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content-script.js"
+      ],
+      "run_at": "document_start"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "offscreen"
+  ],
+  "host_permissions": [
+    "<all_urls>"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "injected.js",
+        "circuits/*",
+        "wasm/*"
+      ],
+      "matches": [
+        "<all_urls>"
+      ]
+    }
+  ]
+}

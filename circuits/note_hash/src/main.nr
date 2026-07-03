@@ -18,10 +18,20 @@ pub fn compute_commitment(value: Field, note_randomness: Field, spending_pk: Fie
     Poseidon2::hash([value, note_randomness, spending_pk], 3)
 }
 
-pub fn compute_nullifier(spending_sk: Field, value: Field, note_randomness: Field) -> Field {
+pub fn compute_nullifier(
+    spending_sk: Field,
+    value: Field,
+    note_randomness: Field,
+    diversifier: Field,
+) -> Field {
     let spending_pk = derive_spending_pk(spending_sk);
+    let recipient_pk = if diversifier == 0 {
+        spending_pk
+    } else {
+        Poseidon2::hash([spending_pk, diversifier], 2)
+    };
     let nk = derive_nullifier_key(spending_sk);
-    let commitment = compute_commitment(value, note_randomness, spending_pk);
+    let commitment = compute_commitment(value, note_randomness, recipient_pk);
     Poseidon2::hash([nk, commitment], 2)
 }
 
@@ -46,6 +56,6 @@ fn test_sender_cannot_derive_recipient_nullifier() {
     let rcm = 555;
     let value = 1_000;
     let _commitment = compute_commitment(value, rcm, bob_pk);
-    let bob_nf = compute_nullifier(bob_sk, value, rcm);
+    let bob_nf = compute_nullifier(bob_sk, value, rcm, 0);
     assert(bob_nf != 0);
 }

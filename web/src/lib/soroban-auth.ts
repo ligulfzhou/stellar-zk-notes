@@ -1,4 +1,3 @@
-import { StellarWalletsKit } from "@creit.tech/stellar-wallets-kit/sdk";
 import {
   Address,
   Transaction,
@@ -6,7 +5,7 @@ import {
   authorizeEntry,
   xdr,
 } from "@stellar/stellar-sdk";
-import { initWalletsKit, networkPassphrase } from "./wallet";
+import { networkPassphrase, signSorobanAuthPreimage } from "./wallet";
 
 type XdrEnumSwitch = { name?: string; value?: number };
 
@@ -25,13 +24,12 @@ function isUnsignedAddressAuth(entry: xdr.SorobanAuthorizationEntry): boolean {
   return credentials.address().signature().switch().name === "scvVoid";
 }
 
-/** Sign Soroban auth entries that require a separate wallet auth prompt. */
+/** Sign Soroban auth entries with the local unified wallet key. */
 export async function authorizePreparedTransaction(
   preparedXdr: string,
   address: string,
   validUntilLedgerSeq: number
 ): Promise<string> {
-  initWalletsKit();
   const passphrase = networkPassphrase();
   const tx = TransactionBuilder.fromXDR(preparedXdr, passphrase) as Transaction;
   const op = tx.operations[0];
@@ -50,7 +48,6 @@ export async function authorizePreparedTransaction(
     const credentials = xdr.SorobanCredentials.fromXDR(entry.credentials().toXDR());
     const credType = switchName(credentials.switch());
 
-    // Source-account auth is satisfied by signing the transaction envelope.
     if (credType === "sorobanCredentialsSourceAccount") {
       continue;
     }
@@ -69,13 +66,10 @@ export async function authorizePreparedTransaction(
     auth[i] = await authorizeEntry(
       entry,
       async (preimage) => {
-        const { signedAuthEntry } = await StellarWalletsKit.signAuthEntry(
+        const signedAuthEntry = await signSorobanAuthPreimage(
           preimage.toXDR("base64"),
-          { networkPassphrase: passphrase, address }
+          address
         );
-        if (!signedAuthEntry) {
-          throw new Error("Wallet returned no signed auth entry");
-        }
         return Buffer.from(signedAuthEntry, "base64");
       },
       validUntilLedgerSeq,
@@ -98,7 +92,7 @@ export async function authorizePreparedTransaction(
   });
   if (needsOwnAddressAuth) {
     throw new Error(
-      "Soroban auth entry was not signed. Reconnect your wallet and approve the auth prompt when Freighter asks."
+      "Soroban auth entry was not signed. Unlock your wallet in the Notes tab and retry."
     );
   }
 
@@ -116,6 +110,5 @@ export async function authorizePreparedTransaction(
     );
   }
 
-  // Only source-account auth (or already-signed address auth): envelope signature is enough.
   return preparedXdr;
 }

@@ -5,9 +5,9 @@ import type { Note } from "@/lib/note";
 import { exportVaultJson, importVaultJson, loadVault } from "@/lib/note-store";
 import { rescanVaultFromChain } from "@/lib/rescan-vault";
 import { formatError } from "@/lib/format-error";
-import { isPlatformAuthenticatorAvailable, passkeyOriginHint } from "@/lib/passkey";
 import { persistFullVault, useWalletStore } from "@/store/useWalletStore";
-import { usePasskeyStore } from "@/store/usePasskeyStore";
+import { useSecretsStore } from "@/store/useSecretsStore";
+import { WalletSetupPanel } from "@/components/WalletSetupPanel";
 
 function formatStroops(value: bigint): string {
   const whole = value / 10_000_000n;
@@ -18,29 +18,16 @@ function formatStroops(value: bigint): string {
 
 export function NotesPanel() {
   const { notes, chainCommitments, publicKey, refreshNotes } = useWalletStore();
-  const {
-    unlocked,
-    unlocking,
-    unlock,
-    registerRecovery,
-    rootSeed,
-  } = usePasskeyStore();
+  const { unlocked, rootSeed, unlock } = useSecretsStore();
 
   const fileRef = useRef<HTMLInputElement>(null);
   const [status, setStatus] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rescanning, setRescanning] = useState(false);
-  const [platformOk, setPlatformOk] = useState(true);
-  const originHint = passkeyOriginHint();
 
   useEffect(() => {
-    void (async () => {
-      if (!publicKey) {
-        return;
-      }
-      await loadVault(publicKey);
-      setPlatformOk(await isPlatformAuthenticatorAvailable());
-    })();
+    if (!publicKey) return;
+    void loadVault(publicKey);
   }, [publicKey, unlocked, rootSeed, notes.length]);
 
   async function handleExport() {
@@ -57,7 +44,7 @@ export function NotesPanel() {
     anchor.download = `zk-utxo-vault-${Date.now()}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
-    setStatus("Vault exported (metadata only — secrets stay in passkey)");
+    setStatus("Vault exported (metadata only — recovery phrase not included)");
   }
 
   async function handleImport(file: File) {
@@ -78,23 +65,16 @@ export function NotesPanel() {
     setError(null);
     setStatus(null);
     if (!publicKey) {
-      setError("Connect wallet first (needed to read chain state)");
+      setError("Connect wallet first");
       return;
     }
-
-    let seed = rootSeed;
-    if (!seed) {
-      try {
-        seed = await unlock();
-      } catch {
-        setError("Unlock passkey first to rescan deposits");
-        return;
-      }
-    }
-
     setRescanning(true);
-    setStatus("Scanning vault events on-chain…");
     try {
+      let seed = rootSeed;
+      if (!seed) {
+        setStatus("Unlocking…");
+        seed = await unlock();
+      }
       const existing = await loadVault(publicKey);
       const result = await rescanVaultFromChain({
         ownerPubkey: publicKey,
@@ -105,80 +85,22 @@ export function NotesPanel() {
       await persistFullVault(result.vault);
       await refreshNotes();
       setStatus(
-        `Rescan done: ${result.notesAdded} received note(s), ` +
-          `${result.vault.chainCommitments.length} commitments, ` +
-          `${result.eventsParsed} events`
+        `Rescan done: ${result.notesAdded} received note(s), ${result.eventsParsed} events`
       );
     } catch (err) {
-      setError(formatError(err) || "Rescan failed");
-      setStatus(null);
+      setError(formatError(err));
     } finally {
       setRescanning(false);
     }
   }
 
-  async function handleUnlockPasskey() {
-    setError(null);
-    try {
-      await unlock();
-      await refreshNotes();
-      setStatus("Passkey unlocked");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Passkey unlock failed");
-    }
-  }
-
-  async function handleAddRecovery() {
-    setError(null);
-    try {
-      if (!unlocked) await unlock();
-      await registerRecovery("Recovery passkey");
-      setStatus("Recovery passkey added — can unwrap wallet on another device");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Recovery passkey failed");
-    }
-  }
-
   return (
     <section className="rounded-2xl border border-white/10 bg-white/5 p-6">
-      <div className="mb-6 rounded-xl border border-sky-500/20 bg-sky-500/5 p-4">
-        <h3 className="text-sm font-medium text-sky-200">Passkey wallet</h3>
-        <p className="mt-1 text-xs text-zinc-400">
-          Note secrets are derived from your device passkey (WebAuthn PRF). Unlock
-          with biometrics to deposit or exit. On a new device: same synced passkey,
-          or add a recovery passkey, then Rescan from chain.
-        </p>
-        <p className="mt-2 text-sm text-zinc-300">
-          Status: {unlocked ? "🔓 unlocked" : "🔒 locked"}
-        </p>
-        {!platformOk ? (
-          <p className="mt-1 text-xs text-amber-300">
-            Platform authenticator not detected. Use Safari 17+ or Chrome 118+ on macOS/iOS.
-          </p>
-        ) : null}
-        {originHint ? (
-          <p className="mt-1 text-xs text-amber-300">{originHint}</p>
-        ) : null}
+      <WalletSetupPanel />
 
-        <div className="mt-3 flex flex-wrap gap-2">
-          {!unlocked ? (
-            <button
-              type="button"
-              onClick={() => void handleUnlockPasskey()}
-              disabled={unlocking}
-              className="rounded-lg bg-sky-600 px-3 py-1.5 text-sm text-white hover:bg-sky-500 disabled:opacity-50"
-            >
-              {unlocking ? "Waiting…" : "Unlock passkey"}
-            </button>
-          ) : (
-            <button
-              type="button"
-              onClick={() => void handleAddRecovery()}
-              className="rounded-lg border border-sky-500/30 px-3 py-1.5 text-sm text-sky-200 hover:bg-sky-500/10"
-            >
-              Add recovery passkey
-            </button>
-          )}
+      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+        <h2 className="text-lg font-medium">Local note vault</h2>
+        <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => void handleRescan()}
@@ -187,12 +109,6 @@ export function NotesPanel() {
           >
             {rescanning ? "Scanning…" : "Rescan from chain"}
           </button>
-        </div>
-      </div>
-
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-        <h2 className="text-lg font-medium">Local note vault</h2>
-        <div className="flex flex-wrap gap-2">
           <button
             type="button"
             onClick={() => void handleExport()}
@@ -257,7 +173,7 @@ function NoteRow({
       <div className="flex flex-wrap justify-between gap-2">
         <span>{formatStroops(note.value)} XLM</span>
         <span className="text-zinc-400">
-          {note.status} · leaf {note.leafIndex} · {sourceLabel}
+          {note.status} · leaf {note.leafIndex} · d={note.diversifier} · {sourceLabel}
         </span>
       </div>
       <p className="mt-1 truncate font-mono text-xs text-zinc-500">{note.commitment}</p>

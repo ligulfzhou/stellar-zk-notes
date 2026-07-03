@@ -133,6 +133,7 @@ function makeNote(params: {
     value: params.value,
     noteRandomness: params.noteRandomness,
     spendingPk: params.spendingPk,
+    diversifier: "0",
     commitment: params.commitmentHex,
     leafIndex: params.leafIndex,
     status: "unspent",

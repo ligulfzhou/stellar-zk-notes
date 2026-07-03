@@ -1,9 +1,16 @@
 import { randomBytes } from "@noble/ciphers/utils.js";
+import { hkdf } from "@noble/hashes/hkdf.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import { executeNoirField } from "./noir-runtime";
+import { encodeShieldedAddress } from "./shielded-address";
+import { deriveShieldedReceiveKeysFromSeed } from "./root-seed";
 import { BN254_FR_MODULUS, bytesToFieldDecimal } from "./root-seed";
 
 export const DOMAIN_SPENDING_PK = "1";
 export const DOMAIN_NULLIFIER_KEY = "2";
+export const DOMAIN_INCOMING_VIEWING = "3";
+
+const IVK_INFO = new TextEncoder().encode("incoming-viewing-key");
 
 export function deriveSpendingSkFromSeed(seed: Uint8Array): string {
   return bytesToFieldDecimal(seed, "zk-utxo/spending-sk");
@@ -23,6 +30,24 @@ export async function deriveNullifierKey(spendingSk: string): Promise<string> {
   });
 }
 
+/** Viewing key for scan-only wallets (cannot spend). */
+export function deriveIncomingViewingKeyHex(masterSeed: Uint8Array): string {
+  const derived = hkdf(sha256, masterSeed, new Uint8Array(), IVK_INFO, 32);
+  return [...derived].map((b) => b.toString(16).padStart(2, "0")).join("");
+}
+
+/** d=0 → spending_pk (v2 compatible); d>0 diversifies payment address. */
+export async function diversifiedRecipientPk(
+  spendingPk: string,
+  diversifier: string
+): Promise<string> {
+  if (BigInt(diversifier) === 0n) return spendingPk;
+  return executeNoirField("hash_pair", {
+    left: spendingPk,
+    right: diversifier,
+  });
+}
+
 export async function deriveSpendingKeysFromSeed(seed: Uint8Array): Promise<{
   spendingSk: string;
   spendingPk: string;
@@ -34,6 +59,43 @@ export async function deriveSpendingKeysFromSeed(seed: Uint8Array): Promise<{
     spendingSk,
     spendingPk,
     spendingPkHex: fieldDecToHex(spendingPk),
+  };
+}
+
+export type ShieldedReceiveBundle = {
+  diversifier: string;
+  spendingPk: string;
+  recipientPk: string;
+  recipientPkHex: string;
+  x25519Hex: string;
+  address: string;
+  incomingViewingKeyHex: string;
+};
+
+export async function deriveShieldedReceiveBundle(
+  masterSeed: Uint8Array,
+  diversifier: string | bigint
+): Promise<ShieldedReceiveBundle> {
+  const d =
+    typeof diversifier === "bigint" ? diversifier.toString() : diversifier;
+  const { spendingPk } = await deriveSpendingKeysFromSeed(masterSeed);
+  const recipientPk = await diversifiedRecipientPk(spendingPk, d);
+  const { publicKey } = deriveShieldedReceiveKeysFromSeed(masterSeed, d);
+  const x25519Hex = [...publicKey]
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+  return {
+    diversifier: d,
+    spendingPk,
+    recipientPk,
+    recipientPkHex: fieldDecToHex(recipientPk),
+    x25519Hex,
+    address: encodeShieldedAddress({
+      diversifier: d,
+      recipientPk,
+      x25519Hex,
+    }),
+    incomingViewingKeyHex: deriveIncomingViewingKeyHex(masterSeed),
   };
 }
 
@@ -56,7 +118,7 @@ export function fieldHexToDec(hex: string): string {
   return BigInt(h).toString();
 }
 
-/** zk1:<spending_pk_hex>#<x25519_hex> — pk for commitment, x25519 for encrypted delivery */
+/** @deprecated Legacy zk1 hex format — use zkstellar bech32 addresses. */
 export function formatShieldedReceiveAddress(
   spendingPkHex: string,
   x25519Hex: string
@@ -69,10 +131,12 @@ export function formatShieldedReceiveAddress(
   return `zk1:${pk}#${enc}`;
 }
 
+/** @deprecated */
 export function parseShieldedReceiveAddress(input: string): {
   spendingPkHex: string;
   spendingPk: string;
   x25519Hex: string;
+  diversifier: string;
 } {
   const trimmed = input.trim();
   if (trimmed.startsWith("zk1:")) {
@@ -81,20 +145,17 @@ export function parseShieldedReceiveAddress(input: string): {
       ? body.split("#", 2)
       : [body, ""];
     if (!pkHex || pkHex.length !== 64) {
-      throw new Error("Invalid zk1 spending pk — use zk1:<pk64>#<x25519_64>");
+      throw new Error("Invalid zk1 spending pk");
     }
     if (!encHex || encHex.length !== 64) {
-      throw new Error("Missing x25519 delivery key — use zk1:<pk64>#<x25519_64>");
+      throw new Error("Missing x25519 delivery key");
     }
     return {
       spendingPkHex: pkHex.toLowerCase(),
       spendingPk: fieldHexToDec(pkHex),
       x25519Hex: encHex.toLowerCase(),
+      diversifier: "0",
     };
   }
-  if (trimmed.startsWith("0x") && trimmed.length === 66) {
-    const pkHex = trimmed.slice(2).toLowerCase();
-    throw new Error("Include delivery key: zk1:<pk64>#<x25519_64>");
-  }
-  throw new Error("Enter zk1:<spending_pk>#<x25519> receive address");
+  throw new Error("Enter zkstellar shielded address");
 }

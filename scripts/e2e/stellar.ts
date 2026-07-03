@@ -126,6 +126,68 @@ export async function getVaultMerkleRoot(reader: string): Promise<string> {
   return "0x" + Buffer.from(bytes).toString("hex").padStart(64, "0");
 }
 
+async function getVaultFilledAtLevel(
+  reader: string,
+  level: number
+): Promise<string | null> {
+  const server = rpcServer();
+  const contract = new Contract(requireVaultId());
+  const source = await loadAccount(reader);
+  const tx = new TransactionBuilder(source, {
+    fee: "100",
+    networkPassphrase: config.networkPassphrase,
+  })
+    .addOperation(
+      contract.call("get_filled_at_level", nativeToScVal(level, { type: "u32" }))
+    )
+    .setTimeout(30)
+    .build();
+  const sim = await server.simulateTransaction(tx);
+  if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) return null;
+  const bytes = scValToNative(sim.result.retval) as Buffer;
+  return "0x" + Buffer.from(bytes).toString("hex").padStart(64, "0");
+}
+
+async function getVaultZeroAtLevel(
+  reader: string,
+  level: number
+): Promise<string | null> {
+  const server = rpcServer();
+  const contract = new Contract(requireVaultId());
+  const source = await loadAccount(reader);
+  const tx = new TransactionBuilder(source, {
+    fee: "100",
+    networkPassphrase: config.networkPassphrase,
+  })
+    .addOperation(
+      contract.call("get_zero_at_level", nativeToScVal(level, { type: "u32" }))
+    )
+    .setTimeout(30)
+    .build();
+  const sim = await server.simulateTransaction(tx);
+  if (!rpc.Api.isSimulationSuccess(sim) || !sim.result?.retval) return null;
+  const bytes = scValToNative(sim.result.retval) as Buffer;
+  return "0x" + Buffer.from(bytes).toString("hex").padStart(64, "0");
+}
+
+export type VaultTreeState = { filled: string[]; zeros: string[] };
+
+export async function fetchVaultTreeState(
+  reader: string,
+  height = 16
+): Promise<VaultTreeState | null> {
+  const filled: string[] = [];
+  const zeros: string[] = [];
+  for (let level = 0; level < height; level++) {
+    const f = await getVaultFilledAtLevel(reader, level);
+    const z = await getVaultZeroAtLevel(reader, level);
+    if (!f || !z) return null;
+    filled.push(f);
+    zeros.push(z);
+  }
+  return { filled, zeros };
+}
+
 async function waitLeafIncrease(before: number, reader: string): Promise<number> {
   for (let i = 0; i < 10; i++) {
     const count = await getVaultLeafCount(reader);
@@ -265,6 +327,7 @@ export async function fetchDenseCommitments(reader: string): Promise<{
   commitments: string[];
   leafCount: number;
   merkleRoot: string;
+  treeState: VaultTreeState | null;
 }> {
   const leafCount = await getVaultLeafCount(reader);
   const commitments: string[] = [];
@@ -274,7 +337,8 @@ export async function fetchDenseCommitments(reader: string): Promise<{
     commitments.push(c);
   }
   const merkleRoot = await getVaultMerkleRoot(reader);
-  return { commitments, leafCount, merkleRoot };
+  const treeState = await fetchVaultTreeState(reader).catch(() => null);
+  return { commitments, leafCount, merkleRoot, treeState };
 }
 
 export async function exitViaRelayer(params: {

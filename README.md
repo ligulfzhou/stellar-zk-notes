@@ -1,74 +1,110 @@
 # zk-utxo
 
-UTXO-style private payments on Stellar — arbitrary amounts, 4×4 action bundles, dual withdraw paths.
+Stellar 上的 **UTXO 风格隐私支付**：任意金额、Sapling 式 note、4×4 动作束、UltraHonk 零知识证明。
 
 **Hackathon:** [Stellar Hacks: Real-World ZK](https://dorahacks.io/hackathon/stellar-hacks-zk/detail)  
 **Category:** Wild — UTXO-style private payment system
 
-**Sibling project:** [`zk`](../zk) — Tornado-style denomination privacy pools (separate submission)
+> **文档 / Docs:** [中文 README](./README.md) · [English README](./README.en.md)
 
-## Status
+## 是什么
 
-| Layer | Status |
-|-------|--------|
-| `utxo_actions` circuit (4×4 + relayer_fee, Sapling-style notes) | ✅ 8 tests pass |
+用户将 XLM 存入 Soroban **Vault**，获得本地 **shielded note**（链上只有 Merkle 承诺）。之后可以：
+
+- **Send** — 在池内隐私转账给 `zkstellar1…` 地址（ZK 证明，不暴露金额）
+- **Withdraw** — 花费 note，取回公开 XLM 到 `G…` 地址
+
+一份 BIP39 助记词同时控制 Stellar 账户与隐私密钥；Web 钱包在浏览器内完成签名与证明。
+
+## 架构一图
+
+```mermaid
+flowchart LR
+  subgraph wallet [Web 钱包]
+    MN[助记词] --> G[G 地址]
+    MN --> ZK[zkstellar 地址]
+    ZK --> Notes[本地 Notes]
+  end
+
+  Notes -->|Deposit| V[(Vault)]
+  Notes -->|Send + ZK| V
+  Notes -->|Withdraw + ZK| G2[公开 G 地址]
+  V --> Tree[Merkle 承诺树]
+```
+
+**详细技术文档（含 Deposit / Send / Withdraw 流程图与实现细节）：**  
+👉 **[docs/architecture.md](docs/architecture.md)**（中文） · **[docs/architecture.en.md](docs/architecture.en.md)**（English）
+
+## 状态
+
+| 组件 | 状态 |
+|------|------|
+| `utxo_actions` 电路（4×4 + diversifier） | ✅ |
 | `note_hash` / `hash_pair` | ✅ |
-| Soroban vault (deposit / shielded_transfer / withdraw / exit_via_relayer) | ✅ 8 contract tests |
-| Web wallet — Deposit / Send / Withdraw | ✅ |
-| Relayer + E2E (mock + real ZK) | ✅ |
-| Testnet (UltraHonk) | ✅ see [deploy.md](docs/deploy.md) |
+| 统一 Web 钱包（助记词 + passkey + `zkstellar…`） | ✅ |
+| Soroban Vault + UltraHonk Verifier | ✅ |
+| Deposit / Send / Withdraw UI | ✅ |
+| Relayer 退出 + E2E | ✅ |
+| Testnet 部署 | ✅ [deploy.md](docs/deploy.md) |
 
-See [design spec](docs/superpowers/specs/2026-06-24-utxo-private-payment-design.md) and [implementation plan](docs/superpowers/plans/2026-06-24-utxo-implementation.md).
+## 快速开始
 
-## Deploy (testnet)
-
-```bash
-STELLAR_SOURCE=admin ./scripts/deploy_testnet.sh          # MockVerifier (demo)
-STELLAR_SOURCE=admin ./scripts/deploy_testnet.sh --real-zk # UltraHonk + utxo_actions VK
-```
-
-Update `web/.env.local` with the printed `VAULT_ID`.
-
-## E2E (no browser)
+### 电路与合约
 
 ```bash
-# Requires UTXO vault in web/.env.local
-ZK_MOCK_PROOF=true STELLAR_SOURCE=admin ./scripts/e2e_testnet.sh --flow withdraw
-ZK_MOCK_PROOF=true STELLAR_SOURCE=alice ./scripts/e2e_testnet.sh --flow send
-ZK_MOCK_PROOF=true STELLAR_SOURCE=admin E2E_RELAYER_SOURCE=alice ./scripts/e2e_testnet.sh --flow relayer-exit
-ZK_MOCK_PROOF=true STELLAR_SOURCE=alice ./scripts/e2e_testnet.sh --flow full
-
-# Relayer HTTP (start relayer first):
-# cd scripts/relayer && RELAYER_SECRET=<alice S> VAULT_ID=<C> npm run server
-ZK_MOCK_PROOF=true STELLAR_SOURCE=admin ./scripts/e2e_testnet.sh --flow relayer-http
-```
-
-## vs `zk` (Tornado)
-
-| | `zk` | `zk-utxo` |
-|--|------|-----------|
-| Amounts | Fixed 1/10/100 XLM pools | **Any amount** |
-| Circuit | `pool_actions` | **`utxo_actions`** |
-| Merkle | 3 denomination trees | **Single global tree** |
-| UX | Join / Exit | Deposit / Withdraw |
-| Payments | Same-denomination pool | Coin selection + change (4×4) |
-
-## Quick start
-
-```bash
-# Circuits
 cd circuits/utxo_actions && nargo test
-
-# Contracts
 cd contracts && cargo test -p vault
+```
 
-# Web wallet
+### Web 钱包
+
+```bash
 cd web && npm install && npm run dev
 ```
 
-Set `NEXT_PUBLIC_VAULT_CONTRACT_ID` in `web/.env.local` after testnet deploy ([deploy guide](docs/deploy.md)).
+在 **Notes** 页创建钱包 → passkey 解锁 → **Open wallet** → 使用 Deposit / Send / Withdraw。
 
-**Live testnet (real ZK):** vault `CDXNSHTPMRSDJSVHJ4K5BUJPDOT7NI6XH6HSBODRLLG3R2EYVBIATICW`
+部署后配置 `web/.env.local`：
+
+```env
+NEXT_PUBLIC_VAULT_CONTRACT_ID=<vault contract id>
+```
+
+### Testnet 部署
+
+```bash
+STELLAR_SOURCE=admin ./scripts/deploy_testnet.sh          # MockVerifier（演示）
+STELLAR_SOURCE=admin ./scripts/deploy_testnet.sh --real-zk # UltraHonk + utxo_actions VK
+```
+
+### E2E（无浏览器）
+
+```bash
+ZK_MOCK_PROOF=true STELLAR_SOURCE=admin ./scripts/e2e_testnet.sh --flow withdraw
+ZK_MOCK_PROOF=true STELLAR_SOURCE=alice ./scripts/e2e_testnet.sh --flow send
+ZK_MOCK_PROOF=true STELLAR_SOURCE=alice ./scripts/e2e_testnet.sh --flow full
+```
+
+## 文档
+
+| 文档 | 内容 |
+|------|------|
+| [architecture.md](docs/architecture.md) | 系统架构、密码学、Deposit/Send/Withdraw 详解（中文） |
+| [architecture.en.md](docs/architecture.en.md) | **Architecture & operations (English — for demo)** |
+| [demo-video-script.md](docs/demo-video-script.md) | Demo 视频脚本（分镜 + 旁白） |
+| [key-derivation.md](docs/key-derivation.md) | 助记词 → G 地址 + shielded 密钥 |
+| [deploy.md](docs/deploy.md) | Testnet 部署与 VK 更新 |
+
+## 仓库结构
+
+```
+circuits/          Noir 电路
+contracts/         Soroban Vault + Verifier
+web/               Next.js 钱包
+packages/wallet-core/  共享密钥逻辑
+scripts/e2e/       端到端测试
+scripts/relayer/   Relayer 退出服务
+```
 
 ## License
 

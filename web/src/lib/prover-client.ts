@@ -27,6 +27,7 @@ function witnessToNoirInputs(witness: UtxoWitnessPayload): InputMap {
     spend_value: witness.spend_value,
     spend_note_randomness: witness.spend_note_randomness,
     spend_spending_sk: witness.spend_spending_sk,
+    spend_diversifier: witness.spend_diversifier,
     spend_merkle_path: witness.spend_merkle_path,
     spend_path_indices: witness.spend_path_indices,
     out_value: witness.out_value,

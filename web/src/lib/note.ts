@@ -6,6 +6,7 @@ export async function createNote(params: {
   valueStroops: bigint;
   noteRandomness: string;
   spendingPk: string;
+  diversifier?: string;
   commitmentHex: string;
   leafIndex: number;
   received?: boolean;
@@ -15,6 +16,7 @@ export async function createNote(params: {
     value: params.valueStroops,
     noteRandomness: params.noteRandomness,
     spendingPk: params.spendingPk,
+    diversifier: params.diversifier ?? "0",
     commitment: params.commitmentHex,
     leafIndex: params.leafIndex,
     status: "unspent",

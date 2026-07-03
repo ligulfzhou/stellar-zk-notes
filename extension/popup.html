@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ZK Stellar Wallet</title>
+    <link rel="stylesheet" href="/src/popup/popup.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>ZK Stellar</h1>
+        <p class="subtitle">Stellar + shielded zk-utxo</p>
+      </header>
+      <div id="status" class="status"></div>
+      <div id="view-setup" class="panel hidden">
+        <label class="field">
+          <span>Password</span>
+          <input id="setup-password" type="password" autocomplete="new-password" />
+        </label>
+        <label id="import-wrap" class="field hidden">
+          <span>Recovery phrase</span>
+          <textarea id="import-mnemonic" rows="3" placeholder="24 words…"></textarea>
+        </label>
+        <div class="actions">
+          <button id="btn-create" type="button">Create wallet</button>
+          <button id="btn-import-toggle" type="button" class="secondary">Import instead</button>
+          <button id="btn-import" type="button" class="hidden">Import wallet</button>
+        </div>
+        <pre id="new-mnemonic" class="mnemonic hidden"></pre>
+      </div>
+      <div id="view-unlock" class="panel hidden">
+        <label class="field">
+          <span>Password</span>
+          <input id="unlock-password" type="password" autocomplete="current-password" />
+        </label>
+        <button id="btn-unlock" type="button">Unlock</button>
+      </div>
+      <div id="view-wallet" class="panel hidden">
+        <div class="kv">
+          <span class="label">Stellar</span>
+          <code id="stellar-pk"></code>
+        </div>
+        <div class="kv">
+          <span class="label">Shielded</span>
+          <code id="shielded-addr"></code>
+        </div>
+        <div class="actions">
+          <button id="btn-lock" type="button" class="secondary">Lock</button>
+          <button id="btn-reset" type="button" class="danger">Reset</button>
+        </div>
+      </div>
+      <p id="error" class="error hidden"></p>
+    </div>
+    <script type="module" src="/src/popup/main.ts"></script>
+  </body>
+</html>

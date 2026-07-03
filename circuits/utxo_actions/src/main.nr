@@ -24,10 +24,25 @@ fn compute_commitment(value: Field, note_randomness: Field, spending_pk: Field) 
     Poseidon2::hash([value, note_randomness, spending_pk], 3)
 }
 
-fn compute_nullifier(spending_sk: Field, value: Field, note_randomness: Field) -> Field {
+/// d=0 keeps v2 compatibility (recipient_pk = spending_pk); d>0 diversifies payment address.
+fn diversified_pk(spending_pk: Field, diversifier: Field) -> Field {
+    if diversifier == 0 {
+        spending_pk
+    } else {
+        hash_pair(spending_pk, diversifier)
+    }
+}
+
+fn compute_nullifier(
+    spending_sk: Field,
+    value: Field,
+    note_randomness: Field,
+    diversifier: Field,
+) -> Field {
     let spending_pk = derive_spending_pk(spending_sk);
+    let recipient_pk = diversified_pk(spending_pk, diversifier);
     let nk = derive_nullifier_key(spending_sk);
-    let commitment = compute_commitment(value, note_randomness, spending_pk);
+    let commitment = compute_commitment(value, note_randomness, recipient_pk);
     Poseidon2::hash([nk, commitment], 2)
 }
 
@@ -57,14 +72,16 @@ fn verify_spend_slot(
     value: Field,
     note_randomness: Field,
     spending_sk: Field,
+    diversifier: Field,
     merkle_path: [Field; TREE_HEIGHT],
     path_indices: [bool; TREE_HEIGHT],
     merkle_root: Field,
 ) {
     if nullifier != 0 {
         let spending_pk = derive_spending_pk(spending_sk);
-        let commitment = compute_commitment(value, note_randomness, spending_pk);
-        let computed_nullifier = compute_nullifier(spending_sk, value, note_randomness);
+        let recipient_pk = diversified_pk(spending_pk, diversifier);
+        let commitment = compute_commitment(value, note_randomness, recipient_pk);
+        let computed_nullifier = compute_nullifier(spending_sk, value, note_randomness, diversifier);
         assert(computed_nullifier == nullifier);
         verify_merkle_path(commitment, merkle_path, path_indices, merkle_root);
     } else {
@@ -91,6 +108,7 @@ fn main(
     spend_value: [Field; MAX_SPENDS],
     spend_note_randomness: [Field; MAX_SPENDS],
     spend_spending_sk: [Field; MAX_SPENDS],
+    spend_diversifier: [Field; MAX_SPENDS],
     spend_merkle_path: [[Field; TREE_HEIGHT]; MAX_SPENDS],
     spend_path_indices: [[bool; TREE_HEIGHT]; MAX_SPENDS],
     out_value: [Field; MAX_OUTPUTS],
@@ -109,6 +127,7 @@ fn main(
             spend_value[i],
             spend_note_randomness[i],
             spend_spending_sk[i],
+            spend_diversifier[i],
             spend_merkle_path[i],
             spend_path_indices[i],
             merkle_root,
@@ -200,6 +219,7 @@ fn invoke_transfer(
     spend_value: [Field; MAX_SPENDS],
     spend_note_randomness: [Field; MAX_SPENDS],
     spend_spending_sk: [Field; MAX_SPENDS],
+    spend_diversifier: [Field; MAX_SPENDS],
     spend_merkle_path: [[Field; TREE_HEIGHT]; MAX_SPENDS],
     spend_path_indices: [[bool; TREE_HEIGHT]; MAX_SPENDS],
     out_value: [Field; MAX_OUTPUTS],
@@ -215,6 +235,7 @@ fn invoke_transfer(
         spend_value,
         spend_note_randomness,
         spend_spending_sk,
+        spend_diversifier,
         spend_merkle_path,
         spend_path_indices,
         out_value,
@@ -228,6 +249,10 @@ fn invoke_transfer(
     );
 }
 
+fn zero_diversifiers() -> [Field; MAX_SPENDS] {
+    [0, 0, 0, 0]
+}
+
 #[test]
 fn test_commitment_and_nullifier_consistency() {
     let sk = 42;
@@ -235,7 +260,7 @@ fn test_commitment_and_nullifier_consistency() {
     let rcm = 7;
     let pk = derive_spending_pk(sk);
     let commitment = compute_commitment(value, rcm, pk);
-    let nullifier = compute_nullifier(sk, value, rcm);
+    let nullifier = compute_nullifier(sk, value, rcm, 0);
     assert(nullifier != 0);
     assert(commitment != 0);
 }
@@ -247,7 +272,7 @@ fn test_shielded_send_payee_output_without_payee_sk() {
     let value = 1_000;
     let alice_rcm = 22;
     let c = compute_commitment(value, alice_rcm, alice_pk);
-    let nf = compute_nullifier(alice_sk, value, alice_rcm);
+    let nf = compute_nullifier(alice_sk, value, alice_rcm, 0);
 
     let bob_pk = derive_spending_pk(777);
     let payee_rcm = 33;
@@ -266,6 +291,7 @@ fn test_shielded_send_payee_output_without_payee_sk() {
         [value, 0, 0, 0],
         [alice_rcm, 0, 0, 0],
         [alice_sk, 0, 0, 0],
+        zero_diversifiers(),
         paths,
         indices,
         [value, 0, 0, 0],
@@ -286,7 +312,7 @@ fn test_withdraw_via_actions() {
     let value = 500;
     let rcm = 9;
     let c = compute_commitment(value, rcm, pk);
-    let nf = compute_nullifier(sk, value, rcm);
+    let nf = compute_nullifier(sk, value, rcm, 0);
 
     let (path, idx) = first_leaf_merkle_witness();
     let root = root_for_first_leaf(c);
@@ -301,6 +327,7 @@ fn test_withdraw_via_actions() {
         [value, 0, 0, 0],
         [rcm, 0, 0, 0],
         [sk, 0, 0, 0],
+        zero_diversifiers(),
         paths,
         indices,
         [0, 0, 0, 0],
@@ -322,7 +349,7 @@ fn test_relayer_exit_via_actions() {
     let fee = 10_000;
     let rcm = 9;
     let c = compute_commitment(value, rcm, pk);
-    let nf = compute_nullifier(sk, value, rcm);
+    let nf = compute_nullifier(sk, value, rcm, 0);
 
     let (path, idx) = first_leaf_merkle_witness();
     let root = root_for_first_leaf(c);
@@ -337,6 +364,7 @@ fn test_relayer_exit_via_actions() {
         [value, 0, 0, 0],
         [rcm, 0, 0, 0],
         [sk, 0, 0, 0],
+        zero_diversifiers(),
         paths,
         indices,
         [0, 0, 0, 0],
@@ -357,14 +385,14 @@ fn test_shielded_send_2x2_via_actions() {
     let v0 = 600;
     let rcm0 = 22;
     let c0 = compute_commitment(v0, rcm0, pk0);
-    let nf0 = compute_nullifier(sk0, v0, rcm0);
+    let nf0 = compute_nullifier(sk0, v0, rcm0, 0);
 
     let sk1 = 33;
     let pk1 = derive_spending_pk(sk1);
     let v1 = 400;
     let rcm1 = 44;
     let c1 = compute_commitment(v1, rcm1, pk1);
-    let nf1 = compute_nullifier(sk1, v1, rcm1);
+    let nf1 = compute_nullifier(sk1, v1, rcm1, 0);
 
     let bob_pk = derive_spending_pk(999);
     let payee = 700;
@@ -382,6 +410,7 @@ fn test_shielded_send_2x2_via_actions() {
         [v0, v1, 0, 0],
         [rcm0, rcm1, 0, 0],
         [sk0, sk1, 0, 0],
+        zero_diversifiers(),
         [path0, path1, [0; TREE_HEIGHT], [0; TREE_HEIGHT]],
         [idx0, idx1, [false; TREE_HEIGHT], [false; TREE_HEIGHT]],
         [payee, change, 0, 0],
@@ -402,28 +431,28 @@ fn test_4_in_2_out_via_actions() {
     let v0 = 100;
     let rcm0 = 2;
     let c0 = compute_commitment(v0, rcm0, pk0);
-    let nf0 = compute_nullifier(sk0, v0, rcm0);
+    let nf0 = compute_nullifier(sk0, v0, rcm0, 0);
 
     let sk1 = 3;
     let pk1 = derive_spending_pk(sk1);
     let v1 = 200;
     let rcm1 = 4;
     let c1 = compute_commitment(v1, rcm1, pk1);
-    let nf1 = compute_nullifier(sk1, v1, rcm1);
+    let nf1 = compute_nullifier(sk1, v1, rcm1, 0);
 
     let sk2 = 5;
     let pk2 = derive_spending_pk(sk2);
     let v2 = 150;
     let rcm2 = 6;
     let c2 = compute_commitment(v2, rcm2, pk2);
-    let nf2 = compute_nullifier(sk2, v2, rcm2);
+    let nf2 = compute_nullifier(sk2, v2, rcm2, 0);
 
     let sk3 = 7;
     let pk3 = derive_spending_pk(sk3);
     let v3 = 50;
     let rcm3 = 8;
     let c3 = compute_commitment(v3, rcm3, pk3);
-    let nf3 = compute_nullifier(sk3, v3, rcm3);
+    let nf3 = compute_nullifier(sk3, v3, rcm3, 0);
 
     let total = 500;
     let payee = 350;
@@ -474,6 +503,7 @@ fn test_4_in_2_out_via_actions() {
         [v0, v1, v2, v3],
         [rcm0, rcm1, rcm2, rcm3],
         [sk0, sk1, sk2, sk3],
+        zero_diversifiers(),
         [path0, path1, path2, path3],
         [idx0, idx1, idx2, idx3],
         [payee, change, 0, 0],

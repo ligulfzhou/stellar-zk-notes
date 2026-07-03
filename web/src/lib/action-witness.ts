@@ -1,5 +1,5 @@
 import { computeCommitment, computeNullifier } from "./commitment";
-import { deriveSpendingPk } from "./shielded-keys";
+import { deriveSpendingPk, diversifiedRecipientPk } from "./shielded-keys";
 import {
   fieldHexListToBigInt,
   merkleWitness,
@@ -14,6 +14,7 @@ export type UtxoWitnessPayload = {
   spend_value: string[];
   spend_note_randomness: string[];
   spend_spending_sk: string[];
+  spend_diversifier: string[];
   spend_merkle_path: string[][];
   spend_path_indices: boolean[][];
   out_value: string[];
@@ -102,6 +103,7 @@ async function buildInputSlot(params: {
   value: string;
   noteRandomness: string;
   spendingSk: string;
+  diversifier: string;
   leafIndex: number;
   leafCount: number;
   commitments: string[];
@@ -110,10 +112,11 @@ async function buildInputSlot(params: {
   onChainMerkleRoot?: string;
 }) {
   const spendingPk = await deriveSpendingPk(params.spendingSk);
+  const recipientPk = await diversifiedRecipientPk(spendingPk, params.diversifier);
   const spendCommitmentHex = await computeCommitment({
     valueStroops: BigInt(params.value),
     noteRandomness: params.noteRandomness,
-    spendingPk,
+    spendingPk: recipientPk,
   });
 
   if (
@@ -129,6 +132,7 @@ async function buildInputSlot(params: {
     spendingSk: params.spendingSk,
     valueStroops: BigInt(params.value),
     noteRandomness: params.noteRandomness,
+    diversifier: params.diversifier,
   });
 
   const spendLeaf = hexToBigInt(spendCommitmentHex);
@@ -167,6 +171,7 @@ export type SpendInput = {
   value: string;
   noteRandomness: string;
   spendingSk: string;
+  diversifier?: string;
   leafIndex: number;
   noteCommitment?: string;
 };
@@ -220,6 +225,7 @@ async function buildUtxoWitness(params: {
   for (const input of params.inputs) {
     const slot = await buildInputSlot({
       ...input,
+      diversifier: input.diversifier ?? "0",
       leafCount: params.leafCount,
       commitments: params.commitments,
       treeState: params.treeState,
@@ -262,6 +268,7 @@ async function buildUtxoWitness(params: {
     spend_value: pad4(params.inputs.map((i) => i.value)),
     spend_note_randomness: pad4(params.inputs.map((i) => i.noteRandomness)),
     spend_spending_sk: pad4(params.inputs.map((i) => i.spendingSk)),
+    spend_diversifier: pad4(params.inputs.map((i) => i.diversifier ?? "0")),
     spend_merkle_path: paths,
     spend_path_indices: indices,
     out_value: outValues,
@@ -368,6 +375,7 @@ export async function buildSingleNoteWithdrawWitness(params: {
         value: params.note.value.toString(),
         noteRandomness: params.note.noteRandomness,
         spendingSk: params.spendingSk,
+        diversifier: params.note.diversifier,
         leafIndex: params.note.leafIndex,
         noteCommitment: params.note.commitment,
       },
@@ -394,6 +402,7 @@ export async function buildSingleNoteRelayerExitWitness(params: {
         value: params.note.value.toString(),
         noteRandomness: params.note.noteRandomness,
         spendingSk: params.spendingSk,
+        diversifier: params.note.diversifier,
         leafIndex: params.note.leafIndex,
         noteCommitment: params.note.commitment,
       },

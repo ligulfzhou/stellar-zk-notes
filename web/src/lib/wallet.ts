@@ -1,10 +1,3 @@
-import { StellarWalletsKit } from "@creit.tech/stellar-wallets-kit/sdk";
-import { defaultModules } from "@creit.tech/stellar-wallets-kit/modules/utils";
-import {
-  KitEventType,
-  Networks,
-  SwkAppDarkTheme,
-} from "@creit.tech/stellar-wallets-kit/types";
 import {
   Networks as StellarNetworks,
   Transaction,
@@ -12,8 +5,14 @@ import {
 } from "@stellar/stellar-sdk";
 import { STELLAR_NETWORK } from "./config";
 import { formatError } from "./format-error";
+import {
+  signAuthEntryPreimage,
+  signStellarTransactionXdr,
+} from "./unified-stellar";
+import { loadWalletMeta } from "./wallet-meta";
+import { useSecretsStore } from "@/store/useSecretsStore";
 
-let initialized = false;
+export type WalletBackend = "unified";
 
 export function networkPassphrase(): string {
   return STELLAR_NETWORK.toLowerCase() === "mainnet"
@@ -21,82 +20,52 @@ export function networkPassphrase(): string {
     : StellarNetworks.TESTNET;
 }
 
-function kitNetwork(): Networks {
-  return STELLAR_NETWORK.toLowerCase() === "mainnet"
-    ? Networks.PUBLIC
-    : Networks.TESTNET;
+export function usesUnifiedWallet(): boolean {
+  const { unlocked, stellarPublicKey } = useSecretsStore.getState();
+  return Boolean(unlocked && stellarPublicKey);
 }
 
-/** Ensure Freighter (or other wallet) matches app network and signing account. */
+export async function detectWalletBackend(): Promise<WalletBackend | null> {
+  if (usesUnifiedWallet()) return "unified";
+  const meta = await loadWalletMeta();
+  if (meta) return "unified";
+  return null;
+}
+
 export async function assertWalletReadyForSigning(
   expectedAddress: string
 ): Promise<void> {
-  initWalletsKit();
-  const expectedPassphrase = networkPassphrase();
-
-  let walletPassphrase: string;
-  let walletNetwork: string | undefined;
-  try {
-    const network = await StellarWalletsKit.getNetwork();
-    walletPassphrase = network.networkPassphrase;
-    walletNetwork = network.network;
-  } catch (err) {
-    throw new Error(
-      `Could not read wallet network: ${formatError(err)}. Open Freighter and set network to Testnet.`
-    );
+  const { unlocked, stellarPublicKey } = useSecretsStore.getState();
+  if (!unlocked || !stellarPublicKey) {
+    throw new Error("Unlock your wallet in the Notes tab");
   }
-
-  if (walletPassphrase !== expectedPassphrase) {
+  if (stellarPublicKey !== expectedAddress) {
     throw new Error(
-      `Wallet network mismatch: wallet is on "${walletNetwork ?? "unknown"}" but this app uses ${STELLAR_NETWORK}. In Freighter, switch to Testnet (Settings → Network), then reconnect.`
-    );
-  }
-
-  const { address } = await StellarWalletsKit.fetchAddress();
-  if (address !== expectedAddress) {
-    throw new Error(
-      `Wallet account mismatch: Freighter is on ${address.slice(0, 8)}… but this action needs ${expectedAddress.slice(0, 8)}…. Switch account in Freighter or reconnect.`
+      `Wallet account mismatch: expected ${expectedAddress.slice(0, 8)}…`
     );
   }
 }
 
-export function initWalletsKit(): void {
-  if (initialized || typeof window === "undefined") return;
-
-  const network = kitNetwork();
-
-  StellarWalletsKit.init({
-    modules: defaultModules(),
-    network,
-    theme: SwkAppDarkTheme,
-  });
-  initialized = true;
-}
-
+/** Connect the local unified wallet (unlock required). */
 export async function connectWallet(): Promise<string> {
-  initWalletsKit();
-  const { address } = await StellarWalletsKit.authModal();
-  return address;
-}
+  const secrets = useSecretsStore.getState();
+  if (secrets.unlocked && secrets.stellarPublicKey) {
+    return secrets.stellarPublicKey;
+  }
 
-export async function openWalletProfile(): Promise<void> {
-  initWalletsKit();
-  await StellarWalletsKit.profileModal();
-}
+  const meta = await loadWalletMeta();
+  if (meta) {
+    throw new Error("Unlock your wallet in the Notes tab");
+  }
 
-export async function disconnectWallet(): Promise<void> {
-  initWalletsKit();
-  await StellarWalletsKit.disconnect();
+  throw new Error("Create a wallet in the Notes tab first");
 }
 
 export async function getPublicKey(): Promise<string | null> {
-  initWalletsKit();
-  try {
-    const { address } = await StellarWalletsKit.getAddress();
-    return address || null;
-  } catch {
-    return null;
-  }
+  const { unlocked, stellarPublicKey } = useSecretsStore.getState();
+  if (unlocked && stellarPublicKey) return stellarPublicKey;
+  const meta = await loadWalletMeta();
+  return meta?.stellarPublicKey ?? null;
 }
 
 export async function signTransactionXdr(
@@ -104,54 +73,58 @@ export async function signTransactionXdr(
   address: string
 ): Promise<string> {
   await assertWalletReadyForSigning(address);
-  initWalletsKit();
-  const passphrase = networkPassphrase();
+
+  const { stellarSecretKey, stellarPublicKey } = useSecretsStore.getState();
+  if (!stellarSecretKey || stellarPublicKey !== address) {
+    throw new Error("Unlock your wallet in the Notes tab");
+  }
+
+  const signedTxXdr = signStellarTransactionXdr(
+    stellarSecretKey,
+    xdr,
+    networkPassphrase()
+  );
+  return verifySignedXdr(signedTxXdr, xdr, address);
+}
+
+export async function signSorobanAuthPreimage(
+  preimageXdrBase64: string,
+  address: string
+): Promise<string> {
+  await assertWalletReadyForSigning(address);
+  const { stellarSecretKey, stellarPublicKey } = useSecretsStore.getState();
+  if (!stellarSecretKey || stellarPublicKey !== address) {
+    throw new Error("Unlock your wallet in the Notes tab");
+  }
   try {
-    const { signedTxXdr, signerAddress } = await StellarWalletsKit.signTransaction(
-      xdr,
-      {
-        networkPassphrase: passphrase,
-        address,
-      }
-    );
-    if (!signedTxXdr) {
-      throw new Error("Wallet returned no signed transaction");
-    }
-    if (signedTxXdr === xdr) {
-      throw new Error(
-        "Wallet did not sign the transaction. Confirm the Freighter prompt and ensure the wallet is on Testnet."
-      );
-    }
-    if (signerAddress && signerAddress !== address) {
-      throw new Error(
-        `Wallet signed with ${signerAddress.slice(0, 8)}… instead of ${address.slice(0, 8)}…`
-      );
-    }
-    const tx = TransactionBuilder.fromXDR(signedTxXdr, passphrase) as Transaction;
-    if (tx.signatures.length === 0) {
-      throw new Error(
-        "Wallet returned an unsigned transaction. Ensure Freighter is on Testnet and approve the signing prompt."
-      );
-    }
-    if (tx.source !== address) {
-      throw new Error(
-        `Transaction source (${tx.source.slice(0, 8)}…) does not match connected wallet (${address.slice(0, 8)}…)`
-      );
-    }
-    return signedTxXdr;
+    return signAuthEntryPreimage(stellarSecretKey, preimageXdrBase64);
   } catch (err) {
-    throw new Error(formatError(err) || "Wallet signing cancelled");
+    throw new Error(formatError(err) || "Auth entry signing failed");
   }
 }
 
-export function subscribeWalletAddress(
-  onAddress: (address: string | undefined) => void
-): () => void {
-  initWalletsKit();
-  return StellarWalletsKit.on(KitEventType.STATE_UPDATED, (event) => {
-    onAddress(event.payload.address);
-  });
+function verifySignedXdr(
+  signedTxXdr: string,
+  xdr: string,
+  address: string,
+  signerAddress?: string
+): string {
+  if (signedTxXdr === xdr) {
+    throw new Error("Wallet did not sign the transaction.");
+  }
+  if (signerAddress && signerAddress !== address) {
+    throw new Error(
+      `Wallet signed with ${signerAddress.slice(0, 8)}… instead of ${address.slice(0, 8)}…`
+    );
+  }
+  const tx = TransactionBuilder.fromXDR(signedTxXdr, networkPassphrase()) as Transaction;
+  if (tx.signatures.length === 0) {
+    throw new Error("Wallet returned an unsigned transaction.");
+  }
+  if (tx.source !== address) {
+    throw new Error(
+      `Transaction source (${tx.source.slice(0, 8)}…) does not match wallet (${address.slice(0, 8)}…)`
+    );
+  }
+  return signedTxXdr;
 }
-
-/** @deprecated Use connectWallet */
-export const connectFreighter = connectWallet;

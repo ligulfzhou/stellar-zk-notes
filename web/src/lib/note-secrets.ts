@@ -1,18 +1,18 @@
 import type { Note } from "./note-types";
 import { deriveSpendingSkFromSeed } from "./shielded-keys";
 
-/** Resolve spending_sk from passkey root seed (v2 Sapling-style). */
-export function resolveSpendingSk(rootSeed: Uint8Array | null): string {
-  if (!rootSeed) {
-    throw new Error("Unlock passkey first");
+/** Resolve spending_sk from unlocked mnemonic master seed. */
+export function resolveSpendingSk(masterSeed: Uint8Array | null): string {
+  if (!masterSeed) {
+    throw new Error("Unlock privacy wallet first");
   }
-  return deriveSpendingSkFromSeed(rootSeed);
+  return deriveSpendingSkFromSeed(masterSeed);
 }
 
 export async function resolveSpendingSkFromVault(): Promise<string> {
-  const { usePasskeyStore } = await import("@/store/usePasskeyStore");
-  const rootSeed = usePasskeyStore.getState().requireSeed();
-  return resolveSpendingSk(rootSeed);
+  const { useSecretsStore } = await import("@/store/useSecretsStore");
+  const masterSeed = useSecretsStore.getState().requireSeed();
+  return resolveSpendingSk(masterSeed);
 }
 
 export function assertNoteOwnedBySpendingPk(

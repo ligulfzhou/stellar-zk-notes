@@ -9,9 +9,7 @@ import { WithdrawPanel } from "@/components/WithdrawPanel";
 import { NotesPanel } from "@/components/NotesPanel";
 import { PasskeyUnlockBanner } from "@/components/PasskeyUnlockBanner";
 import { DevPrivacyWarning } from "@/components/DevPrivacyWarning";
-import { ZkModeBadge } from "@/components/ZkModeBadge";
 import { useWalletStore } from "@/store/useWalletStore";
-import { initWalletsKit } from "@/lib/wallet";
 
 const tabs = [
   { id: "dashboard", label: "Dashboard" },
@@ -25,7 +23,6 @@ export function WalletApp() {
   const { activeTab, setTab, hydrate, error } = useWalletStore();
 
   useEffect(() => {
-    initWalletsKit();
     void hydrate();
   }, [hydrate]);
 
@@ -40,7 +37,6 @@ export function WalletApp() {
             <h1 className="text-xl font-semibold">zk-utxo</h1>
           </div>
           <div className="flex items-center gap-3">
-            <ZkModeBadge />
             <ConnectButton />
           </div>
         </div>

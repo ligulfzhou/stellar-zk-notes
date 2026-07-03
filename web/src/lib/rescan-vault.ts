@@ -1,9 +1,12 @@
 import { computeNullifier } from "./commitment-client";
 import type { Note, StoredNoteVault } from "./note-types";
 import { defaultVault } from "./note-types";
-import { deriveSpendingKeysFromSeed } from "./shielded-keys";
-import { deriveShieldedReceiveKeysFromSeed } from "./root-seed";
 import { tryDecryptNote } from "./note-crypto";
+import {
+  deriveSpendingKeysFromSeed,
+  diversifiedRecipientPk,
+} from "./shielded-keys";
+import { deriveShieldedReceiveKeysFromSeed } from "./root-seed";
 import {
   fetchVaultChainEvents,
   isNullifierSpentOnChain,
@@ -17,6 +20,25 @@ export type RescanResult = {
   eventsParsed: number;
 };
 
+async function tryDecryptForWallet(
+  masterSeed: Uint8Array,
+  maxDiversifier: number,
+  epk: Uint8Array,
+  encryptedNote: Uint8Array
+) {
+  for (let d = 0; d <= maxDiversifier; d++) {
+    const { secretKey } = deriveShieldedReceiveKeysFromSeed(masterSeed, String(d));
+    const payload = tryDecryptNote(secretKey, epk, encryptedNote);
+    if (!payload) continue;
+    const diversifier = payload.diversifier ?? String(d);
+    const { spendingPk } = await deriveSpendingKeysFromSeed(masterSeed);
+    const expectedPk = await diversifiedRecipientPk(spendingPk, diversifier);
+    if (BigInt(payload.spendingPk) !== BigInt(expectedPk)) continue;
+    return { payload, diversifier };
+  }
+  return null;
+}
+
 export async function rescanVaultFromChain(params: {
   ownerPubkey: string;
   rootSeed: Uint8Array;
@@ -24,8 +46,8 @@ export async function rescanVaultFromChain(params: {
   onProgress?: (message: string) => void;
 }): Promise<RescanResult> {
   const existing = params.existingVault ?? defaultVault();
-  const { spendingSk, spendingPk } = await deriveSpendingKeysFromSeed(params.rootSeed);
-  const { secretKey: x25519Sk } = deriveShieldedReceiveKeysFromSeed(params.rootSeed);
+  const { spendingSk } = await deriveSpendingKeysFromSeed(params.rootSeed);
+  const maxDiversifier = Math.max(existing.addressIndex, 8);
 
   params.onProgress?.("Fetching vault events…");
   const events = await fetchVaultChainEvents();
@@ -42,6 +64,7 @@ export async function rescanVaultFromChain(params: {
         spendingSk,
         valueStroops: copy.value,
         noteRandomness: copy.noteRandomness,
+        diversifier: copy.diversifier,
       });
       const spent = await isNullifierSpentOnChain(nullifier, params.ownerPubkey);
       if (spent) copy.status = "spent";
@@ -59,15 +82,20 @@ export async function rescanVaultFromChain(params: {
     if (!send.encryptedNote.length) continue;
 
     const epk = hexToBytes(send.epk);
-    const payload = tryDecryptNote(x25519Sk, epk, send.encryptedNote);
-    if (!payload) continue;
-    if (BigInt(payload.spendingPk) !== BigInt(spendingPk)) continue;
+    const decrypted = await tryDecryptForWallet(
+      params.rootSeed,
+      maxDiversifier,
+      epk,
+      send.encryptedNote
+    );
+    if (!decrypted) continue;
 
     notes.push({
       id: crypto.randomUUID(),
-      value: BigInt(payload.valueStroops),
-      noteRandomness: payload.noteRandomness,
-      spendingPk: payload.spendingPk,
+      value: BigInt(decrypted.payload.valueStroops),
+      noteRandomness: decrypted.payload.noteRandomness,
+      spendingPk: decrypted.payload.spendingPk,
+      diversifier: decrypted.diversifier,
       commitment: send.newCommitment,
       leafIndex: send.leafIndex,
       status: "unspent",
@@ -91,7 +119,7 @@ export async function rescanVaultFromChain(params: {
 
   const vault: StoredNoteVault = {
     ...existing,
-    version: 6,
+    version: 7,
     notes,
     chainCommitments,
   };

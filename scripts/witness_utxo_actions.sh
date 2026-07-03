@@ -28,6 +28,7 @@ def merkle_indices(name, indices):
 field_arr("spend_value", d["spend_value"])
 field_arr("spend_note_randomness", d["spend_note_randomness"])
 field_arr("spend_spending_sk", d["spend_spending_sk"])
+field_arr("spend_diversifier", d.get("spend_diversifier", ["0","0","0","0"]))
 merkle_paths("spend_merkle_path", d["spend_merkle_path"])
 merkle_indices("spend_path_indices", d["spend_path_indices"])
 field_arr("out_value", d["out_value"])

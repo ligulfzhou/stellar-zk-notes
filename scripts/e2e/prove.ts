@@ -43,13 +43,12 @@ export async function waitForChainNote(params: {
       if (at && at.toLowerCase() === target) {
         return { leafIndex: params.expectedLeafIndex };
       }
-    } else {
-      const leafIndex = dense.commitments.findLastIndex(
-        (c) => c.toLowerCase() === target
-      );
-      if (leafIndex >= 0) {
-        return { leafIndex };
-      }
+    }
+    const leafIndex = dense.commitments.findLastIndex(
+      (c) => c.toLowerCase() === target
+    );
+    if (leafIndex >= 0) {
+      return { leafIndex };
     }
     await sleep(2000);
   }
@@ -132,7 +131,7 @@ async function loadProveChain(reader: string) {
     commitments: dense.commitments,
     leafCount: dense.leafCount,
     merkleRoot: dense.merkleRoot,
-    treeState: null,
+    treeState: dense.treeState,
   };
 }
 
@@ -232,6 +231,7 @@ export async function proveShieldedSend(params: {
         value: params.spendNote.value.toString(),
         noteRandomness: params.spendNote.noteRandomness,
         spendingSk: params.spendingSk,
+        diversifier: params.spendNote.diversifier ?? "0",
         leafIndex: params.spendNote.leafIndex,
         noteCommitment: params.spendNote.commitment,
       },
@@ -258,6 +258,7 @@ export async function proveShieldedSend(params: {
       valueStroops: out.value,
       noteRandomness: out.noteRandomness,
       spendingPk: out.recipientPk,
+      diversifier: "0",
     });
     epkHexes.push(bytesToHex0x(enc.epk));
     encryptedNotes.push(enc.encryptedNote);

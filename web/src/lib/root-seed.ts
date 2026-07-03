@@ -69,13 +69,16 @@ export type ShieldedReceiveKeys = {
 };
 
 export function deriveShieldedReceiveKeysFromSeed(
-  seed: Uint8Array
+  seed: Uint8Array,
+  diversifier: string | bigint = "0"
 ): ShieldedReceiveKeys {
+  const d =
+    typeof diversifier === "bigint" ? diversifier.toString() : diversifier;
   const scalar = hkdf(
     sha256,
     seed,
     SHIELDED_HKDF_SALT,
-    new TextEncoder().encode("receive-sk"),
+    new TextEncoder().encode(`receive-sk/${d}`),
     32
   );
   const { secretKey, publicKey } = x25519.keygen(scalar);

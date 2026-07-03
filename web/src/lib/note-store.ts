@@ -1,6 +1,7 @@
 import { del, get, set } from "idb-keyval";
+import type { EncryptedMnemonic } from "./encrypted-secrets";
 import type { Note, StoredNoteVault } from "./note";
-import { defaultVault, hasPasskey } from "./note-types";
+import { defaultVault, hasPasskey, hasWalletSecrets } from "./note-types";
 import type { PasskeyVaultConfig } from "./passkey";
 
 const VAULT_PREFIX = "zk-utxo:vault";
@@ -10,34 +11,54 @@ function vaultKeyFor(pubkey: string): string {
   return `${VAULT_PREFIX}:${pubkey}`;
 }
 
-type SerializedNote = Omit<Note, "value"> & { value: string };
+type SerializedNote = Omit<Note, "value"> & {
+  value: string;
+  diversifier?: string;
+};
 
 type SerializedVault = {
-  version: 6;
+  version: 7;
+  encryptedMnemonic?: EncryptedMnemonic | null;
+  passwordSalt?: string | null;
   passkey?: PasskeyVaultConfig | null;
+  addressIndex?: number;
   notes: SerializedNote[];
   chainCommitments: string[];
 };
 
 function serializeVault(vault: StoredNoteVault): SerializedVault {
   return {
-    version: 6,
+    version: 7,
+    encryptedMnemonic: vault.encryptedMnemonic,
+    passwordSalt: vault.passwordSalt,
     passkey: vault.passkey,
-    notes: vault.notes.map((n) => ({ ...n, value: n.value.toString() })),
+    addressIndex: vault.addressIndex,
+    notes: vault.notes.map((n) => ({
+      ...n,
+      value: n.value.toString(),
+      diversifier: n.diversifier,
+    })),
     chainCommitments: [...vault.chainCommitments],
   };
 }
 
 function deserializeVault(data: SerializedVault): StoredNoteVault {
-  if (data.version !== 6) {
+  if (data.version !== 7) {
     throw new Error(
-      "Unsupported vault version — v2 Sapling notes require vault v6 (clear old v5 data)"
+      "Unsupported vault version — create or import a v7 mnemonic privacy wallet"
     );
   }
   return {
-    version: 6,
+    version: 7,
+    encryptedMnemonic: data.encryptedMnemonic ?? null,
+    passwordSalt: data.passwordSalt ?? null,
     passkey: data.passkey ?? null,
-    notes: data.notes.map((n) => ({ ...n, value: BigInt(n.value) })),
+    addressIndex: data.addressIndex ?? 1,
+    notes: data.notes.map((n) => ({
+      ...n,
+      value: BigInt(n.value),
+      diversifier: n.diversifier ?? "0",
+    })),
     chainCommitments: [...data.chainCommitments],
   };
 }
@@ -105,6 +126,7 @@ export async function savePasskeyConfig(
 export async function exportVaultJson(activePubkey: string): Promise<string> {
   const vault = await loadVault(activePubkey);
   const payload = serializeVault(vault);
+  payload.encryptedMnemonic = null;
   if (payload.passkey) {
     payload.passkey = { ...payload.passkey, recoveryWraps: [] };
   }
@@ -119,4 +141,12 @@ export async function getPasskeyConfig(): Promise<PasskeyVaultConfig | null> {
   return loadGlobalPasskey();
 }
 
-export { hasPasskey };
+export async function bumpAddressIndex(activePubkey: string): Promise<number> {
+  const vault = await loadVault(activePubkey);
+  const index = vault.addressIndex;
+  vault.addressIndex = index + 1;
+  await saveVault(vault, activePubkey);
+  return index;
+}
+
+export { hasPasskey, hasWalletSecrets };

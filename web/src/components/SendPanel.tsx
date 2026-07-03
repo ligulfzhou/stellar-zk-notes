@@ -12,17 +12,14 @@ import { createNote } from "@/lib/note";
 import {
   bytesToHex0x,
   encryptNoteForRecipient,
-  parseShieldedReceiveAddress,
 } from "@/lib/note-crypto";
+import { resolveRecipientAddress } from "@/lib/resolve-recipient";
 import { proofBytesFromHex } from "@/lib/proof";
 import { encodePublicInputs, shieldedTransferOnVault } from "@/lib/stellar";
 import { formatError } from "@/lib/format-error";
 import { upsertChainCommitment } from "@/lib/vault-events";
 import {
-  deriveShieldedReceiveKeysFromSeed,
-} from "@/lib/root-seed";
-import {
-  deriveSpendingKeysFromSeed,
+  deriveShieldedReceiveBundle,
   randomNoteRandomness,
 } from "@/lib/shielded-keys";
 import { persistVaultState, useWalletStore } from "@/store/useWalletStore";
@@ -79,14 +76,13 @@ export function SendPanel() {
     setError(null);
     try {
       if (!unlocked) {
-        setStatus("Unlocking passkey…");
+        setStatus("Unlocking privacy wallet…");
         await unlock();
       }
       const seed = usePasskeyStore.getState().requireSeed();
       const spendingSk = await resolveSpendingSkFromVault();
-      const { spendingPk } = await deriveSpendingKeysFromSeed(seed);
-      const { publicKey: selfX25519 } = deriveShieldedReceiveKeysFromSeed(seed);
-      const recipientAddr = parseShieldedReceiveAddress(recipient);
+      const changeBundle = await deriveShieldedReceiveBundle(seed, "0");
+      const recipientAddr = resolveRecipientAddress(recipient);
 
       const { inputs: selected, change } = selectNotesForAmount(
         unspent,
@@ -124,6 +120,7 @@ export function SendPanel() {
         value: note.value.toString(),
         noteRandomness: note.noteRandomness,
         spendingSk,
+        diversifier: note.diversifier,
         leafIndex: note.leafIndex,
         noteCommitment: note.commitment,
       }));
@@ -134,13 +131,15 @@ export function SendPanel() {
         noteRandomness: string;
         recipientPk: string;
         deliveryX25519: string;
+        deliveryDiversifier: string;
         isChange: boolean;
       }> = [
         {
           value: targetStroops.toString(),
           noteRandomness: payeeRcm,
-          recipientPk: recipientAddr.spendingPk,
+          recipientPk: recipientAddr.recipientPk,
           deliveryX25519: recipientAddr.x25519Hex,
+          deliveryDiversifier: recipientAddr.diversifier,
           isChange: false,
         },
       ];
@@ -149,8 +148,9 @@ export function SendPanel() {
         outputs.push({
           value: change.toString(),
           noteRandomness: randomNoteRandomness(),
-          recipientPk: spendingPk,
-          deliveryX25519: bytesToHex0x(selfX25519).slice(2),
+          recipientPk: changeBundle.recipientPk,
+          deliveryX25519: changeBundle.x25519Hex,
+          deliveryDiversifier: changeBundle.diversifier,
           isChange: true,
         });
       }
@@ -193,6 +193,7 @@ export function SendPanel() {
           valueStroops: out.value,
           noteRandomness: out.noteRandomness,
           spendingPk: out.recipientPk,
+          diversifier: out.deliveryDiversifier,
         });
         epkHexes.push(bytesToHex0x(enc.epk));
         encryptedNotes.push(enc.encryptedNote);
@@ -235,6 +236,7 @@ export function SendPanel() {
             valueStroops: BigInt(out.value),
             noteRandomness: out.noteRandomness,
             spendingPk: out.recipientPk,
+            diversifier: out.deliveryDiversifier,
             commitmentHex: nc,
             leafIndex,
           })
@@ -268,8 +270,8 @@ export function SendPanel() {
       <h2 className="mb-2 text-lg font-medium">Send</h2>
       <p className="mb-4 text-sm text-zinc-400">
         Sapling-style send: payee output binds to recipient spending key only —
-        sender cannot spend it. Address format:{" "}
-        <code className="text-zinc-300">zk1:&lt;spending_pk&gt;#&lt;x25519&gt;</code>
+        sender cannot spend it.         Paste recipient <span className="font-mono text-zinc-300">zkstellar…</span> shielded address
+        (from their Notes tab). Each address is self-contained — no Stellar G-address needed.
       </p>
 
       <label className="mb-3 block text-sm">
@@ -277,7 +279,7 @@ export function SendPanel() {
         <input
           value={recipient}
           onChange={(e) => setRecipient(e.target.value)}
-          placeholder="zk1:<spending_pk64>#<x25519_64>"
+          placeholder="zkstellar1…"
           className="mt-1 w-full rounded-lg border border-white/10 bg-black/30 px-3 py-2 font-mono text-xs"
         />
       </label>
